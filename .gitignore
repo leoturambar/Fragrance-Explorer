@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+data/fragrances_clean.csv
+data/fragrances_raw.csv
+data/confirmed_matches.csv
+data/my_list.html
+.vscode/
