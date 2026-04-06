@@ -425,6 +425,13 @@ def compute_scatter_data(df_ratings: pd.DataFrame) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
 
+    # trasformazione logaritmica per distribuire meglio i valori nello spazio
+    # log1p(x) = log(1+x) — mantiene lo 0 a 0, amplifica i valori piccoli
+    df['freshness'] = np.log1p(df['freshness'])
+    df['depth']     = np.log1p(df['depth'])
+    df['intensity'] = np.log1p(df['intensity'])
+
+    # normalizzazione: 0 assoluto, max relativo alla collezione
     for col in ['freshness', 'depth', 'intensity']:
         col_max = df[col].max()
         df[col] = df[col] / col_max if col_max > 0 else df[col]

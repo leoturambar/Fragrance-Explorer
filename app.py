@@ -396,7 +396,7 @@ with tab_profilo:
             st.caption("Abbina qualche profumo per vedere il grafico.")
         else:
             rng = np.random.default_rng(seed=42)
-            jitter = 0.03
+            jitter = 0.05
             x = df_scatter['freshness'] + rng.uniform(-jitter, jitter, len(df_scatter))
             y = df_scatter['depth']     + rng.uniform(-jitter, jitter, len(df_scatter))
 
