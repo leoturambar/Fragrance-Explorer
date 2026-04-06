@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from config import ACCORDS, EXPLORATION_STYLES, GENDER_OPTIONS, MIN_RATING, MAX_RATING, RATING_STEP
 from parser import load_ratings, save_ratings, add_rating
 from matcher import load_dataset, get_candidates, enrich_ratings, save_confirmed_matches, load_confirmed_matches
-from recommender import get_recommendations, get_similar_to, get_exploration_recommendations, build_personal_profile
+from recommender import get_recommendations, get_similar_to, get_exploration_recommendations, build_personal_profile, compute_scatter_data
 from llm import explain_recommendation, explain_profile, explain_exploration
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
@@ -282,26 +283,54 @@ with tab_profilo:
     if df_ratings.empty:
         st.info("Nessuna fragranza nella lista.")
     else:
+        # ── Pre-calcolo top_accords (serve sia per metric che per radar) ──────
+        df_matched = df_ratings[df_ratings['matched'] == True] \
+            if 'matched' in df_ratings.columns else pd.DataFrame()
+
+        top_accords = []
+        if not df_matched.empty:
+            accord_scores = {a: 0.0 for a in ACCORDS}
+            for _, row in df_matched.iterrows():
+                note_str = ' '.join(filter(None, [
+                    str(row.get('top_notes', '')),
+                    str(row.get('middle_notes', '')),
+                    str(row.get('base_notes', '')),
+                    str(row.get('main_accords', '')),
+                ])).lower()
+                weight = (row['rating'] - 1) / 9
+                for accord in ACCORDS:
+                    if accord in note_str:
+                        accord_scores[accord] += weight
+            max_score = max(accord_scores.values()) or 1
+            norm_scores = {a: v / max_score for a, v in accord_scores.items()}
+            top_accords = sorted(norm_scores.items(),
+                                 key=lambda x: x[1], reverse=True)[:8]
+
+        # ── Statistiche — full width ──────────────────────────────────────────
+        st.subheader("Statistiche")
+
+        total        = len(df_ratings)
+        avg_rating   = df_ratings['rating'].mean()
+        best_row     = df_ratings.loc[df_ratings['rating'].idxmax()]
+        full_bottles = len(df_ratings[df_ratings['ownership'] == 'Full Bottle'])
+        decants      = len(df_ratings[df_ratings['ownership'] == 'Decant'])
+        bottle_candidates = len(df_ratings[df_ratings['bottle_candidate'] == True])
+        fam_preferita = top_accords[0][0].capitalize() if top_accords else '—'
+
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Totale",             total)
+        c2.metric("Avg rating",         f"{avg_rating:.1f}")
+        c3.metric("Full bottles",       full_bottles)
+        c4.metric("Decants",            decants)
+        c5.metric("Bottle Candidates",  bottle_candidates)
+        c6.metric("Famiglia preferita", fam_preferita)
+
+        st.divider()
+
+        # ── Bar chart + Radar — due colonne ───────────────────────────────────
         col_left, col_right = st.columns([1, 1])
 
         with col_left:
-            # ── Statistiche base ──────────────────────────────────────────
-            st.subheader("Statistiche")
-
-            total = len(df_ratings)
-            bottles = len(df_ratings[df_ratings['bottle_candidate'] == True])
-            full_bottles = len(df_ratings[df_ratings['ownership'] == 'Full Bottle'])
-            avg_rating = df_ratings['rating'].mean()
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Totale", total)
-            c2.metric("Avg rating", f"{avg_rating:.1f}")
-            c3.metric("Bottle candidates", bottles)
-            c4.metric("Full bottles", full_bottles)
-
-            st.divider()
-
-            # ── Distribuzione rating ──────────────────────────────────────
             st.subheader("Distribuzione rating")
             rating_counts = df_ratings['rating'].value_counts().sort_index(ascending=False)
             fig_bar = go.Figure(go.Bar(
@@ -309,46 +338,21 @@ with tab_profilo:
                 y=[str(r) for r in rating_counts.index],
                 orientation='h',
                 marker_color='#5090ff',
+                hovertemplate='Rating %{y} — %{x} profumi<extra></extra>',
             ))
             fig_bar.update_layout(
-                height=300,
+                height=350,
                 margin=dict(l=0, r=0, t=10, b=0),
                 xaxis_title="Numero profumi",
                 yaxis_title="Rating",
             )
-            st.plotly_chart(fig_bar, use_container_width=True)
+            st.plotly_chart(fig_bar, width='stretch', key="rating_dist")
 
         with col_right:
-            # ── Radar olfattivo ───────────────────────────────────────────
             st.subheader("Radar olfattivo")
-
-            df_matched = df_ratings[df_ratings.get('matched', False) == True] \
-                if 'matched' in df_ratings.columns else pd.DataFrame()
-
             if df_matched.empty:
                 st.info("Abbina le note nel tab 'Abbina note' per vedere il radar.")
             else:
-                # calcola score per accord dal profilo personale
-                accord_scores = {a: 0.0 for a in ACCORDS}
-                for _, row in df_matched.iterrows():
-                    note_str = ' '.join(filter(None, [
-                        str(row.get('top_notes', '')),
-                        str(row.get('middle_notes', '')),
-                        str(row.get('base_notes', '')),
-                        str(row.get('main_accords', '')),
-                    ])).lower()
-                    weight = (row['rating'] - 1) / 9
-                    for accord in ACCORDS:
-                        if accord in note_str:
-                            accord_scores[accord] += weight
-
-                max_score = max(accord_scores.values()) or 1
-                norm_scores = {a: v / max_score for a, v in accord_scores.items()}
-
-                # top 8 accords per non affollare il radar
-                top_accords = sorted(norm_scores.items(),
-                                     key=lambda x: x[1],
-                                     reverse=True)[:8]
                 labels = [a for a, _ in top_accords]
                 values = [v for _, v in top_accords]
                 labels_closed = labels + [labels[0]]
@@ -361,7 +365,8 @@ with tab_profilo:
                     fill='toself',
                     line=dict(color='#00c878', width=2),
                     fillcolor='rgba(0,200,120,0.18)',
-                    name='Il tuo profilo'
+                    name='Il tuo profilo',
+                    hovertemplate='<b>Famiglia: %{theta}</b><br>Affinità: %{r:.0%}<extra></extra>',
                 ))
                 fig_radar.update_layout(
                     polar=dict(
@@ -373,15 +378,77 @@ with tab_profilo:
                         ),
                         angularaxis=dict(tickfont=dict(size=12))
                     ),
-                    height=400,
+                    height=350,
                     margin=dict(l=40, r=40, t=40, b=40),
                     showlegend=False,
                 )
-                st.plotly_chart(fig_radar, use_container_width=True)
+                st.plotly_chart(fig_radar, width='stretch', key="radar_profilo")
 
         st.divider()
 
-        # ── Analisi LLM ───────────────────────────────────────────────────
+        # ── Scatter plot — full width ─────────────────────────────────────────
+        st.subheader("La tua collezione nello spazio olfattivo")
+        df_scatter = compute_scatter_data(df_ratings)
+
+        if df_scatter.empty:
+            st.caption("Abbina qualche profumo per vedere il grafico.")
+        else:
+            rng = np.random.default_rng(seed=42)
+            jitter = 0.03
+            x = df_scatter['freshness'] + rng.uniform(-jitter, jitter, len(df_scatter))
+            y = df_scatter['depth']     + rng.uniform(-jitter, jitter, len(df_scatter))
+
+            fig_scatter = go.Figure()
+
+            fig_scatter.add_trace(go.Scatter(
+                x=x, y=y,
+                mode='markers',
+                name='Profumi',
+                showlegend=False,
+                marker=dict(
+                    size=df_scatter['intensity'] * 28 + 10,
+                    color=df_scatter['rating'],
+                    colorscale='RdYlGn',
+                    cmin=1, cmax=10,
+                    showscale=True,
+                    colorbar=dict(title='Rating', thickness=12),
+                    line=dict(width=1, color='rgba(0,0,0,0.2)'),
+                    opacity=0.85,
+                ),
+                text=df_scatter.apply(
+                    lambda r: f"{r['brand']} — {r['name']}<br>Rating: {r['rating']}", axis=1
+                ),
+                hovertemplate='%{text}<extra></extra>',
+            ))
+
+            for label, size in [(' ', 6), (' ', 12), ('Intensità: bassa / media / alta', 18)]:
+                fig_scatter.add_trace(go.Scatter(
+                    x=[None], y=[None],
+                    mode='markers',
+                    name=label,
+                    marker=dict(size=size, color='rgba(120,120,120,0.6)',
+                                line=dict(width=1, color='rgba(0,0,0,0.2)')),
+                ))
+
+            fig_scatter.update_layout(
+                xaxis=dict(title='Freschezza', range=[-0.15, 1.15], zeroline=False),
+                yaxis=dict(title='Profondità', range=[-0.15, 1.15], zeroline=False),
+                legend=dict(
+                    orientation='h',
+                    x=0, y=1.08,
+                    xanchor='left',
+                    yanchor='bottom',
+                ),
+                height=500,
+                margin=dict(l=40, r=40, t=60, b=40),
+                plot_bgcolor='rgba(240,240,240,0.1)',
+            )
+
+            st.plotly_chart(fig_scatter, width='stretch', key="scatter_collezione")
+
+        st.divider()
+
+        # ── Analisi LLM — full width ──────────────────────────────────────────
         st.subheader("Analisi del tuo profilo")
         if st.button("🤖 Genera analisi profilo", type="primary"):
             with st.spinner("Analisi in corso…"):
@@ -390,6 +457,7 @@ with tab_profilo:
                     st.markdown(analysis)
                 except Exception as e:
                     st.error(f"Errore: {e}")
+                    
 
 with tab_raccomanda:
     st.header("Raccomandazioni")
