@@ -368,7 +368,7 @@ def compute_scatter_data(df_ratings: pd.DataFrame) -> pd.DataFrame:
         tokens = set(str(note_str).lower().replace(',', ' ').split())
         return len(tokens & note_set) * weight
 
-    matched_col = df_ratings.get('matched', pd.Series(False, index=df_ratings.index))
+    matched_col = df_ratings.get('matched', pd.Series(False, index=df_ratings.index)).fillna(False).astype(bool)
     df_matched = df_ratings[matched_col].copy()
 
     if df_matched.empty:

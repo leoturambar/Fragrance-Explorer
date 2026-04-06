@@ -696,15 +696,12 @@ with tab_arricchisci:
     df_ratings = load_ratings()
 
     # filtra: non matchati O matchati ma senza note
-    mask = (
-        (df_ratings.get('matched', pd.Series(False, index=df_ratings.index)) == False) |
-        (
-            (df_ratings.get('matched', pd.Series(False, index=df_ratings.index)) == True) &
-            (df_ratings.get('top_notes', pd.Series('', index=df_ratings.index)).fillna('') == '') &
-            (df_ratings.get('middle_notes', pd.Series('', index=df_ratings.index)).fillna('') == '') &
-            (df_ratings.get('base_notes', pd.Series('', index=df_ratings.index)).fillna('') == '')
-        )
-    )
+    matched = df_ratings.get('matched', pd.Series(False, index=df_ratings.index)).fillna(False).astype(bool)
+    top     = df_ratings.get('top_notes', pd.Series('', index=df_ratings.index)).fillna('')
+    middle  = df_ratings.get('middle_notes', pd.Series('', index=df_ratings.index)).fillna('')
+    base    = df_ratings.get('base_notes', pd.Series('', index=df_ratings.index)).fillna('')
+
+    mask = (~matched) | (matched & (top == '') & (middle == '') & (base == ''))
     df_to_enrich = df_ratings[mask]
 
     if df_to_enrich.empty:
