@@ -365,7 +365,7 @@ with tab_profilo:
                 ))
                 fig_radar.update_layout(
                     polar=dict(
-                        bgcolor='rgba(240,240,240,0.3)',
+                        bgcolor='rgba(240,240,240,0.1)',
                         radialaxis=dict(
                             visible=True,
                             range=[0, 1],
