@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from config import ACCORDS, EXPLORATION_STYLES, GENDER_OPTIONS, MIN_RATING, MAX_RATING, RATING_STEP
 from enricher import enrich_from_web, scrape_fragrantica
-from parser import load_ratings, save_ratings, add_rating, save_enriched_notes
+from parser import load_ratings, save_ratings, add_rating, save_enriched_notes, delete_rating
 from matcher import load_dataset, get_candidates, enrich_ratings, save_confirmed_matches, load_confirmed_matches
 from recommender import get_recommendations, get_similar_to, get_exploration_recommendations, build_personal_profile, compute_scatter_data
 from llm import explain_recommendation, explain_profile, explain_exploration
@@ -93,8 +93,29 @@ with tab_lista:
                         st.caption("✅ Note abbinate")
                     else:
                         st.caption("⚠️ Note non abbinate")
-                    if st.button("✏️ Modifica", key=f"edit_{idx}"):
-                        st.session_state[f"editing_{idx}"] = True
+
+                    col_edit, col_del = st.columns(2)
+                    with col_edit:
+                        if st.button("✏️ Modifica", key=f"edit_{idx}"):
+                            st.session_state[f"editing_{idx}"] = True
+                    with col_del:
+                        if not st.session_state.get(f"confirm_delete_{idx}"):
+                            if st.button("🗑️", key=f"del_{idx}"):
+                                st.session_state[f"confirm_delete_{idx}"] = True
+                                st.rerun()
+                        else:
+                            st.warning("Sicuro?")
+                            col_yes, col_no = st.columns(2)
+                            with col_yes:
+                                if st.button("✅", key=f"del_confirm_{idx}",
+                                             type="primary"):
+                                    delete_rating(idx)
+                                    st.session_state.pop(f"confirm_delete_{idx}", None)
+                                    st.rerun()
+                            with col_no:
+                                if st.button("❌", key=f"del_cancel_{idx}"):
+                                    st.session_state.pop(f"confirm_delete_{idx}", None)
+                                    st.rerun()
 
                 if st.session_state.get(f"editing_{idx}"):
                     with st.form(key=f"form_edit_{idx}"):

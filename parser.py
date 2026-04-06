@@ -129,3 +129,10 @@ def add_rating(brand: str, name: str, form: str, ownership: str,
     df = pd.concat([df, new_row], ignore_index=True)
     save_ratings(df)
     return df
+
+
+def delete_rating(idx: int):
+    """Rimuove una entry dal CSV per indice e resetta gli indici."""
+    df = load_ratings()
+    df = df.drop(index=idx).reset_index(drop=True)
+    save_ratings(df)
