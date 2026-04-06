@@ -38,6 +38,7 @@ def scrape_fragrantica(url: str) -> dict | None:
     Gli accords sono in <div> con classe rounded-br-lg, testo in <span class="truncate">.
     Se non c'è piramide separata top/middle/base, mette tutto in base_notes.
     """
+    url = url.replace('/profumo/', '/perfume/')
     try:
         time.sleep(1)  # cortesia verso il server
         resp = requests.get(url, headers=HEADERS, timeout=10)
