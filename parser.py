@@ -97,6 +97,21 @@ def save_ratings(df: pd.DataFrame):
     df.to_csv(MY_RATINGS_FILE, index=False)
 
 
+def save_enriched_notes(idx: int, top: str, middle: str,
+                         base: str, accords: str):
+    """
+    Aggiorna le note olfattive di una entry esistente nel CSV.
+    """
+    df = load_ratings()
+    df.at[idx, 'top_notes']    = top
+    df.at[idx, 'middle_notes'] = middle
+    df.at[idx, 'base_notes']   = base
+    df.at[idx, 'main_accords'] = accords
+    df.at[idx, 'matched']      = True
+    df.at[idx, 'notes_source'] = 'web_enriched'
+    save_ratings(df)
+
+
 def add_rating(brand: str, name: str, form: str, ownership: str,
                rating: float, comment: str = '', bottle_candidate: bool = False) -> pd.DataFrame:
     """Aggiunge una nuova fragranza al database personale."""
