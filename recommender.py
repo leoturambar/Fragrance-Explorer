@@ -346,11 +346,12 @@ def compute_scatter_data(df_ratings: pd.DataFrame) -> pd.DataFrame:
         'balsamic', 'benzoin', 'labdanum', 'incense', 'oriental',
         'leather', 'tobacco', 'smoky', 'smoke', 'tar', 'dark',
         'vanilla', 'tonka', 'caramel', 'gourmand', 'myrrh', 'frankincense'
+        'licorice', 'coffee'
     }
     INTENSE_NOTES = {
         'oud', 'musk', 'ambergris', 'civet', 'castoreum', 'animalic',
         'amber', 'resin', 'tobacco', 'leather', 'vetiver', 'patchouli',
-        'incense', 'myrrh', 'frankincense', 'benzoin', 'labdanum'
+        'incense', 'myrrh', 'frankincense', 'benzoin', 'labdanum', 'coffee'
     }
     FRESH_ACCORDS = {
         'citrus', 'fresh', 'aquatic', 'green', 'aromatic', 'herbal',

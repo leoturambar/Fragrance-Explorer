@@ -3,7 +3,8 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from config import ACCORDS, EXPLORATION_STYLES, GENDER_OPTIONS, MIN_RATING, MAX_RATING, RATING_STEP
-from parser import load_ratings, save_ratings, add_rating
+from enricher import enrich_from_web, scrape_fragrantica
+from parser import load_ratings, save_ratings, add_rating, save_enriched_notes
 from matcher import load_dataset, get_candidates, enrich_ratings, save_confirmed_matches, load_confirmed_matches
 from recommender import get_recommendations, get_similar_to, get_exploration_recommendations, build_personal_profile, compute_scatter_data
 from llm import explain_recommendation, explain_profile, explain_exploration
@@ -26,13 +27,14 @@ df_dataset = load_dataset_cached()
 
 # ── Tab structure ─────────────────────────────────────────────────────────────
 
-tab_lista, tab_match, tab_profilo, tab_raccomanda, tab_esplora, tab_aggiungi = st.tabs([
+tab_lista, tab_match, tab_profilo, tab_raccomanda, tab_esplora, tab_aggiungi, tab_arricchisci = st.tabs([
     "📋 La mia lista",
     "🔗 Abbina note",
     "🧬 Profilo olfattivo",
     "✨ Raccomandazioni",
     "🧭 Esplora stili",
-    "➕ Aggiungi"
+    "➕ Aggiungi",
+    "🔍 Arricchisci note"
 ])
 
 with tab_lista:
@@ -457,7 +459,7 @@ with tab_profilo:
                     st.markdown(analysis)
                 except Exception as e:
                     st.error(f"Errore: {e}")
-                    
+
 
 with tab_raccomanda:
     st.header("Raccomandazioni")
@@ -664,3 +666,116 @@ with tab_aggiungi:
                     bottle_candidate=new_bottle
                 )
                 st.success(f"✓ {new_brand} {new_name} aggiunto con rating {new_rating}!")
+
+
+with tab_arricchisci:
+    st.header("Arricchisci note")
+    st.caption("Cerca online le note olfattive per i profumi senza piramide.")
+
+    df_ratings = load_ratings()
+
+    # filtra: non matchati O matchati ma senza note
+    mask = (
+        (df_ratings.get('matched', pd.Series(False, index=df_ratings.index)) == False) |
+        (
+            (df_ratings.get('matched', pd.Series(False, index=df_ratings.index)) == True) &
+            (df_ratings.get('top_notes', pd.Series('', index=df_ratings.index)).fillna('') == '') &
+            (df_ratings.get('middle_notes', pd.Series('', index=df_ratings.index)).fillna('') == '') &
+            (df_ratings.get('base_notes', pd.Series('', index=df_ratings.index)).fillna('') == '')
+        )
+    )
+    df_to_enrich = df_ratings[mask]
+
+    if df_to_enrich.empty:
+        st.success("Tutti i profumi hanno già le note olfattive!")
+    else:
+        st.info(f"{len(df_to_enrich)} profumi senza note olfattive complete.")
+
+        for idx, row in df_to_enrich.iterrows():
+            with st.expander(f"**{row['brand']} — {row['name']}** {row.get('form', '')}"):
+
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    st.caption(f"Rating: {row['rating']} | {row.get('comment', '')}")
+                    matched = row.get('matched', False)
+                    st.caption("✅ Matchato nel dataset (note mancanti)" if matched
+                               else "⚠️ Non matchato nel dataset")
+                with col2:
+                    search_clicked = st.button(
+                        "🔍 Cerca online",
+                        key=f"search_{idx}"
+                    )
+
+                # risultati della ricerca — persistiti in session_state
+                result_key = f"enrich_result_{idx}"
+
+                if search_clicked:
+                    with st.spinner(f"Cerco su Fragrantica…"):
+                        result = enrich_from_web(row['brand'], row['name'])
+                    if result:
+                        st.session_state[result_key] = result
+                    else:
+                        st.session_state[result_key] = 'not_found'
+
+                # mostra risultato se presente
+                if result_key in st.session_state:
+                    result = st.session_state[result_key]
+
+                    if result == 'not_found':
+                        st.warning("Nessun risultato trovato su Fragrantica.")
+                    else:
+                        st.divider()
+
+                        # URL modificabile — precompilato con quello trovato
+                        url_input = st.text_input(
+                            "URL Fragrantica",
+                            value=result['url'],
+                            key=f"url_input_{idx}",
+                            help="Puoi modificare l'URL se il profumo trovato non è quello corretto"
+                        )
+
+                        # se l'URL è stato cambiato, offri di ricaricare
+                        if url_input != result['url']:
+                            if st.button("🔄 Ricarica con nuovo URL", key=f"reload_{idx}"):
+                                with st.spinner("Carico…"):
+                                    new_result = scrape_fragrantica(url_input)
+                                if new_result:
+                                    new_result['url'] = url_input
+                                    st.session_state[result_key] = new_result
+                                    st.rerun()
+                                else:
+                                    st.error("Nessuna nota trovata a quell'URL.")
+
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.markdown("**Note trovate:**")
+                            if result['top']:
+                                st.caption(f"Top: {result['top']}")
+                            if result['middle']:
+                                st.caption(f"Middle: {result['middle']}")
+                            if result['base']:
+                                st.caption(f"Base: {result['base']}")
+                            if not any([result['top'], result['middle'], result['base']]):
+                                st.caption("Nessuna piramide disponibile.")
+                        with col_b:
+                            st.markdown("**Accords:**")
+                            st.caption(result['accords'] or '—')
+
+                        st.divider()
+                        col_save, col_skip = st.columns(2)
+                        with col_save:
+                            if st.button("✅ Salva", key=f"save_{idx}", type="primary"):
+                                save_enriched_notes(
+                                    idx=idx,
+                                    top=result['top'],
+                                    middle=result['middle'],
+                                    base=result['base'],
+                                    accords=result['accords'],
+                                )
+                                del st.session_state[result_key]
+                                st.success("Note salvate!")
+                                st.rerun()
+                        with col_skip:
+                            if st.button("⏭️ Salta", key=f"skip_{idx}"):
+                                del st.session_state[result_key]
+                                st.rerun()
