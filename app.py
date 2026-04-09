@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from config import ACCORDS, EXPLORATION_STYLES, GENDER_OPTIONS, MIN_RATING, MAX_RATING, RATING_STEP
 from enricher import enrich_from_web, scrape_fragrantica
-from parser import load_ratings, save_ratings, add_rating, save_enriched_notes, delete_rating
+from parser import load_ratings, save_ratings, add_rating, save_enriched_notes, delete_rating, check_duplicate
 from matcher import load_dataset, get_candidates, enrich_ratings, save_confirmed_matches, load_confirmed_matches
 from recommender import get_recommendations, get_similar_to, get_exploration_recommendations, build_personal_profile, compute_scatter_data
 from llm import explain_recommendation, explain_profile, explain_exploration
@@ -74,6 +74,7 @@ with tab_lista:
             with st.expander(
                 f"**{row['rating']}** — {row['brand']} {row['name']} "
                 f"{'⭐' if row.get('bottle_candidate') else ''}"
+                f"{'🫙' if row.get('ownership') == 'Full Bottle' else ''}"
             ):
                 col1, col2 = st.columns([2, 1])
                 with col1:
@@ -676,6 +677,14 @@ with tab_aggiungi:
         if submitted:
             if not new_brand or not new_name:
                 st.error("Brand e nome sono obbligatori.")
+            elif check_duplicate(new_brand, new_name) and not st.session_state.get('force_add'):
+                st.warning(
+                    f"⚠️ **{new_brand} — {new_name}** è già nella tua lista. "
+                    "Vuoi aggiungerlo comunque (es. versione diversa)?"
+                )
+                if st.button("✅ Aggiungi comunque", key="force_add_btn"):
+                    st.session_state['force_add'] = True
+                    st.rerun()
             else:
                 add_rating(
                     brand=new_brand,
@@ -686,6 +695,7 @@ with tab_aggiungi:
                     comment=new_comment,
                     bottle_candidate=new_bottle
                 )
+                st.session_state.pop('force_add', None)
                 st.success(f"✓ {new_brand} {new_name} aggiunto con rating {new_rating}!")
 
 

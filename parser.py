@@ -136,3 +136,14 @@ def delete_rating(idx: int):
     df = load_ratings()
     df = df.drop(index=idx).reset_index(drop=True)
     save_ratings(df)
+
+
+def check_duplicate(brand: str, name: str) -> bool:
+    """Restituisce True se esiste già una entry con stesso brand e nome."""
+    df = load_ratings()
+    if df.empty:
+        return False
+    return any(
+        (df['brand'].str.lower().str.strip() == brand.lower().strip()) &
+        (df['name'].str.lower().str.strip() == name.lower().strip())
+    )
