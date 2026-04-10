@@ -63,6 +63,12 @@ streamlit run app.py
 
 Or just double-click `launch.bat` on Windows (see below).
 
+
+**Note:** `ANTHROPIC_API_KEY` is a system-level environment variable on Windows
+(set once via `setx`, persists across all projects and terminals).
+If already set for another project on this machine, no action needed.
+
+
 ---
 
 ## Launch from desktop (Windows)
