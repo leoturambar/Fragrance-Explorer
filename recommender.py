@@ -345,7 +345,7 @@ def compute_scatter_data(df_ratings: pd.DataFrame) -> pd.DataFrame:
         'oud', 'agarwood', 'amber', 'ambergris', 'resin', 'resinous',
         'balsamic', 'benzoin', 'labdanum', 'incense', 'oriental',
         'leather', 'tobacco', 'smoky', 'smoke', 'tar', 'dark',
-        'vanilla', 'tonka', 'caramel', 'gourmand', 'myrrh', 'frankincense'
+        'vanilla', 'tonka', 'caramel', 'gourmand', 'myrrh', 'frankincense',
         'licorice', 'coffee'
     }
     INTENSE_NOTES = {

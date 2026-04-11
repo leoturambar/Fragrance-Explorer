@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 from config import ACCORDS, EXPLORATION_STYLES, GENDER_OPTIONS, MIN_RATING, MAX_RATING, RATING_STEP
 from enricher import enrich_from_web, scrape_fragrantica
-from parser import load_ratings, save_ratings, add_rating, save_enriched_notes, delete_rating, check_duplicate
+from ratings import load_ratings, save_ratings, add_rating, save_enriched_notes, delete_rating, check_duplicate
 from matcher import load_dataset, get_candidates, enrich_ratings, save_confirmed_matches, load_confirmed_matches
 from recommender import get_recommendations, get_similar_to, get_exploration_recommendations, build_personal_profile, compute_scatter_data
 from llm import explain_recommendation, explain_profile, explain_exploration
