@@ -85,8 +85,7 @@ The LLM layer is dual-backend, toggled by `LLM_BACKEND` in [llm.py](llm.py). Set
 Python 3.10+ is required. Install dependencies:
 
 ```bash
-pip install streamlit pandas scikit-learn anthropic beautifulsoup4 \
-            plotly rapidfuzz openai duckduckgo-search
+pip install -r requirements.txt
 ```
 
 Place your datasets at `data/fragrances_clean.csv` and `data/fragrances_raw.csv`. Set your API key if using Claude:
@@ -117,7 +116,7 @@ fragrance-explorer/
 ├── recommender.py  — TF-IDF, cosine similarity, profile building, scatter data
 ├── matcher.py      — dataset loading, fuzzy matching, note enrichment from dataset
 ├── enricher.py     — DuckDuckGo search, Fragrantica scraping
-├── parser.py       — HTML import, CSV persistence, add/edit/delete ratings
+├── ratings.py      — HTML import, CSV persistence, add/edit/delete ratings
 ├── llm.py          — LLM backend (Claude or Ollama), three prompt functions
 ├── config.py       — ACCORDS list, EXPLORATION_STYLES dict, rating constants
 ├── launch.bat      — Windows one-click launcher

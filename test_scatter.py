@@ -1,4 +1,4 @@
-from parser import load_ratings
+from ratings import load_ratings
 from recommender import compute_scatter_data
 import numpy as np
 
