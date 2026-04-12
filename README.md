@@ -112,17 +112,16 @@ On Windows, double-clicking `launch.bat` activates the `fragrance` conda environ
 
 ```
 fragrance-explorer/
-├── app.py          — Streamlit UI: seven tabs, all interaction logic
-├── recommender.py  — TF-IDF, cosine similarity, profile building, scatter data
-├── matcher.py      — dataset loading, fuzzy matching, note enrichment from dataset
-├── enricher.py     — DuckDuckGo search, Fragrantica scraping
-├── ratings.py      — HTML import, CSV persistence, add/edit/delete ratings
-├── llm.py          — LLM backend (Claude or Ollama), three prompt functions
-├── config.py       — ACCORDS list, EXPLORATION_STYLES dict, rating constants
-├── launch.bat      — Windows one-click launcher
-└── data/
-    ├── my_ratings.csv          — personal fragrance database
-    └── confirmed_matches.csv   — dataset link table (personal ↔ Kaggle index)
+├── app.py              # Streamlit UI: seven tabs, all interaction logic
+├── recommender.py      # TF-IDF, cosine similarity, profile building, scatter data
+├── matcher.py          # dataset loading, fuzzy matching, note enrichment from dataset
+├── enricher.py         # DuckDuckGo search, Fragrantica scraping
+├── ratings.py          # HTML import, CSV persistence, add/edit/delete ratings
+├── llm.py              # LLM backend (Claude or Ollama), three prompt functions
+├── config.py           # ACCORDS list, EXPLORATION_STYLES dict, rating constants
+├── launch.bat          # Windows one-click launcher
+├── data/               # Input database and preferences
+└── assets/             # Screenshots
 ```
 
 ---
