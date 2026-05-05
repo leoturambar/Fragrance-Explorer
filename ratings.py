@@ -8,13 +8,33 @@ MY_RATINGS_FILE = 'data/my_ratings.csv'
 RATINGS_COLS = [
     'brand',
     'name',
-    'form',       # EdP, EdT, Extrait, ecc.
-    'ownership',  # Decant, Full Bottle
-    'rating',     # 4.5 → 9.5
-    'bottle_candidate',  # True/False
-    'comment',    # tuo commento personale
-    'source',     # html_import, manual
+    'form',              # EdP, EdT, Extrait, ecc.
+    'status',            # Bottle | Decant | Sample | Tested | '' (nessuno)
+    'watchlist',         # True/False — segnalibro indipendente dallo status
+    'rating',            # 1.0 → 10.0
+    'bottle_candidate',  # True/False — N/A se status == Bottle
+    'comment',           # commento personale
+    'source',            # html_import, manual
 ]
+
+_OWNERSHIP_TO_STATUS = {
+    'Full Bottle': 'Bottle',
+    'Decant':      'Decant',
+    'Sample':      'Sample',
+    'Wishlist':    '',
+}
+
+
+def _migrate_ownership(df: pd.DataFrame) -> pd.DataFrame:
+    """Migrates old 'ownership' column to 'status' + 'watchlist'."""
+    if 'ownership' not in df.columns:
+        return df
+    if 'status' not in df.columns:
+        df['status'] = df['ownership'].map(_OWNERSHIP_TO_STATUS).fillna('')
+    if 'watchlist' not in df.columns:
+        df['watchlist'] = df['ownership'].str.strip().str.lower() == 'wishlist'
+    df = df.drop(columns=['ownership'])
+    return df
 
 
 def parse_html() -> pd.DataFrame:
@@ -82,14 +102,24 @@ def parse_html() -> pd.DataFrame:
 def load_ratings() -> pd.DataFrame:
     """
     Carica il CSV dei ratings. Se non esiste, lo crea parsando l'HTML.
+    Migra automaticamente il vecchio campo 'ownership' al nuovo schema.
     """
     if not os.path.exists(MY_RATINGS_FILE):
         df = parse_html()
         if not df.empty:
+            df = _migrate_ownership(df)
             df.to_csv(MY_RATINGS_FILE, index=False)
         return df
 
-    return pd.read_csv(MY_RATINGS_FILE)
+    df = pd.read_csv(MY_RATINGS_FILE)
+    if 'ownership' in df.columns:
+        df = _migrate_ownership(df)
+        df.to_csv(MY_RATINGS_FILE, index=False)
+    if 'status' not in df.columns:
+        df['status'] = ''
+    if 'watchlist' not in df.columns:
+        df['watchlist'] = False
+    return df
 
 
 def save_ratings(df: pd.DataFrame):
@@ -112,15 +142,17 @@ def save_enriched_notes(idx: int, top: str, middle: str,
     save_ratings(df)
 
 
-def add_rating(brand: str, name: str, form: str, ownership: str,
-               rating: float, comment: str = '', bottle_candidate: bool = False) -> pd.DataFrame:
+def add_rating(brand: str, name: str, form: str, status: str,
+               rating: float, comment: str = '',
+               bottle_candidate: bool = False, watchlist: bool = False) -> pd.DataFrame:
     """Aggiunge una nuova fragranza al database personale."""
     df = load_ratings()
     new_row = pd.DataFrame([{
         'brand':            brand,
         'name':             name,
         'form':             form,
-        'ownership':        ownership,
+        'status':           status,
+        'watchlist':        watchlist,
         'rating':           rating,
         'bottle_candidate': bottle_candidate,
         'comment':          comment,
