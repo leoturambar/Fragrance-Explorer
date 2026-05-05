@@ -152,6 +152,20 @@ def load_dataset() -> pd.DataFrame:
     return df
 
 
+def _make_dataset_lookup(df_dataset: pd.DataFrame) -> dict:
+    """
+    Builds a stable (normalized_brand, normalized_name) → (index, row) lookup.
+    Used by enrich_ratings() to resolve matches by string key rather than
+    integer index, which can shift after a dataset reload.
+    """
+    lookup = {}
+    for i, row in df_dataset.iterrows():
+        key = (_normalize_key(str(row['Brand'])), _normalize_key(str(row['Perfume'])))
+        if key not in lookup:
+            lookup[key] = (i, row)
+    return lookup
+
+
 def get_candidates(brand: str, name: str, df_dataset: pd.DataFrame,
                    n: int = 5, threshold: int = 50) -> list[dict]:
     query_brand = brand.lower().strip()
@@ -209,25 +223,49 @@ def enrich_ratings(df_ratings: pd.DataFrame,
     """
     Aggiunge note olfattive al DataFrame personale usando i match confermati.
 
-    confirmed_matches: dict {rating_index: dataset_idx | None}
-        None = utente ha scelto 'nessuno di questi'
+    confirmed_matches values:
+        None                          — utente ha scelto 'nessuno di questi'
+        (int, str, str)               — (dataset_idx, brand, name) — formato nuovo
+        int                           — dataset_idx solo (formato legacy)
     """
     df_dataset = load_dataset()
+    ds_lookup  = _make_dataset_lookup(df_dataset)
     df = df_ratings.copy()
 
     tops, middles, bases, accords, matched, dataset_idxs = [], [], [], [], [], []
 
     for i, row in df.iterrows():
-        dataset_idx = confirmed_matches.get(i)
-        if dataset_idx is not None:
-            ds_row = df_dataset.loc[dataset_idx]
+        match_info = confirmed_matches.get(i)
+        ds_row = None
+        resolved_idx = None
+
+        if match_info is not None:
+            if isinstance(match_info, tuple):
+                # New format: (dataset_idx, brand, name) — primary lookup by string key
+                _legacy_idx, ds_brand, ds_name = match_info
+                key = (_normalize_key(str(ds_brand)), _normalize_key(str(ds_name)))
+                found = ds_lookup.get(key)
+                if found is not None:
+                    resolved_idx, ds_row = found
+                elif _legacy_idx in df_dataset.index:
+                    # brand+name not found in current dataset — fall back to stored index
+                    resolved_idx = _legacy_idx
+                    ds_row = df_dataset.loc[_legacy_idx]
+            else:
+                # Legacy format: bare integer index
+                legacy_idx = int(match_info)
+                if legacy_idx in df_dataset.index:
+                    resolved_idx = legacy_idx
+                    ds_row = df_dataset.loc[legacy_idx]
+
+        if ds_row is not None:
             acc = [str(ds_row.get(f'mainaccord{j}', '')) for j in range(1, 6)]
             tops.append(str(ds_row.get('Top', '')) if pd.notna(ds_row.get('Top')) else '')
             middles.append(str(ds_row.get('Middle', '')) if pd.notna(ds_row.get('Middle')) else '')
             bases.append(str(ds_row.get('Base', '')) if pd.notna(ds_row.get('Base')) else '')
             accords.append(', '.join(a for a in acc if a and a != 'nan'))
             matched.append(True)
-            dataset_idxs.append(dataset_idx)
+            dataset_idxs.append(resolved_idx)
         else:
             tops.append('')
             middles.append('')
@@ -247,19 +285,48 @@ def enrich_ratings(df_ratings: pd.DataFrame,
 
 
 def save_confirmed_matches(confirmed: dict, path: str = 'data/confirmed_matches.csv'):
-    """Salva i match confermati in CSV per non rifare il processo ogni volta."""
-    rows = [{'rating_idx': k, 'dataset_idx': v} for k, v in confirmed.items()]
+    """Salva i match confermati in CSV. Ogni entry include brand+name per lookup stabile."""
+    rows = []
+    for k, v in confirmed.items():
+        if v is None:
+            rows.append({'rating_idx': k, 'dataset_idx': None,
+                         'ds_brand': '', 'ds_name': ''})
+        elif isinstance(v, tuple):
+            _idx, _brand, _name = v
+            rows.append({'rating_idx': k, 'dataset_idx': _idx,
+                         'ds_brand': _brand, 'ds_name': _name})
+        else:
+            # legacy int — save without brand/name
+            rows.append({'rating_idx': k, 'dataset_idx': int(v),
+                         'ds_brand': '', 'ds_name': ''})
     pd.DataFrame(rows).to_csv(path, index=False)
 
 
 def load_confirmed_matches(path: str = 'data/confirmed_matches.csv') -> dict:
-    """Carica i match confermati salvati."""
+    """
+    Carica i match confermati salvati.
+
+    Returns dict values:
+        None                 — skipped entry
+        (int, str, str)      — (dataset_idx, ds_brand, ds_name) when brand+name present
+        int                  — legacy entries that only stored the integer index
+    """
     if not os.path.exists(path):
         return {}
     df = pd.read_csv(path)
+    has_stable_keys = 'ds_brand' in df.columns and 'ds_name' in df.columns
     result = {}
     for _, row in df.iterrows():
         k = int(row['rating_idx'])
-        v = None if pd.isna(row['dataset_idx']) else int(row['dataset_idx'])
-        result[k] = v
+        if pd.isna(row['dataset_idx']):
+            result[k] = None
+        elif has_stable_keys:
+            _brand = str(row.get('ds_brand', '') or '')
+            _name  = str(row.get('ds_name',  '') or '')
+            if _brand and _name:
+                result[k] = (int(row['dataset_idx']), _brand, _name)
+            else:
+                result[k] = int(row['dataset_idx'])  # legacy row in new-format file
+        else:
+            result[k] = int(row['dataset_idx'])  # old-format file entirely
     return result

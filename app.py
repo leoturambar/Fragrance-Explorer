@@ -17,25 +17,32 @@ st.set_page_config(
     layout="wide"
 )
 
-# ── Cache dataset Kaggle (caricato una volta sola) ────────────────────────────
-
 @st.cache_data
 def load_dataset_cached():
     return load_dataset()
 
 df_dataset = load_dataset_cached()
 
+_SCATTER_OPTS = {
+    'all':            'Tutti',
+    'tried_or_owned': 'Provati o posseduti (Bottle+Decant+Sample+Tested)',
+    'owned':          'Solo posseduti (Bottle+Decant+Sample)',
+    'bottle_only':    'Solo bottiglie',
+}
+_STATUS_ICONS = {'Bottle': '🫙', 'Decant': '🧪', 'Sample': '🧴', 'Tested': '✓'}
+
 # ── Tab structure ─────────────────────────────────────────────────────────────
 
-tab_lista, tab_match, tab_profilo, tab_raccomanda, tab_esplora, tab_aggiungi, tab_arricchisci = st.tabs([
+tab_lista, tab_profilo, tab_scopri, tab_gestione = st.tabs([
     "📋 La mia lista",
-    "🔗 Abbina note",
-    "🧬 Profilo olfattivo",
-    "✨ Raccomandazioni",
-    "🧭 Esplora stili",
-    "➕ Aggiungi",
-    "🔍 Arricchisci note"
+    "🧬 Profilo",
+    "✨ Scopri",
+    "⚙️ Gestione",
 ])
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tab 1 — La mia lista
+# ═══════════════════════════════════════════════════════════════════════════════
 
 with tab_lista:
     st.header("La mia lista")
@@ -43,9 +50,19 @@ with tab_lista:
     df_ratings = load_ratings()
 
     if df_ratings.empty:
-        st.info("Nessuna fragranza ancora. Usa il tab Aggiungi o importa la tua lista HTML.")
+        st.info("Nessuna fragranza ancora. Usa il tab Gestione per aggiungerne.")
     else:
-        # ── Filtri ────────────────────────────────────────────────────────
+        # ── Visibilità grafico (session_state condiviso con Profilo) ──────────
+        st.selectbox(
+            "Visibilità grafico (usata anche nel Profilo)",
+            options=list(_SCATTER_OPTS.keys()),
+            format_func=lambda x: _SCATTER_OPTS[x],
+            key='scatter_filter',
+        )
+
+        st.divider()
+
+        # ── Filtri lista ──────────────────────────────────────────────────────
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             rating_min = st.slider("Rating minimo", MIN_RATING, MAX_RATING,
@@ -62,7 +79,10 @@ with tab_lista:
         df_view = df_ratings.copy()
         _st_col = df_view.get('status', pd.Series('', index=df_view.index)).fillna('')
         if status_filter == "Watchlist":
-            df_view = df_view[df_view.get('watchlist', pd.Series(False, index=df_view.index)).fillna(False).astype(bool)]
+            df_view = df_view[
+                df_view.get('watchlist', pd.Series(False, index=df_view.index))
+                .fillna(False).astype(bool)
+            ]
         elif status_filter == "Nessuno status":
             df_view = df_view[_st_col.astype(str).str.strip() == '']
         elif status_filter != "Tutti":
@@ -80,8 +100,7 @@ with tab_lista:
 
         st.caption(f"{len(df_view)} fragranze")
 
-        # ── Lista ─────────────────────────────────────────────────────────
-        _STATUS_ICONS = {'Bottle': '🫙', 'Decant': '🧪', 'Sample': '🧴', 'Tested': '✓'}
+        # ── Lista ─────────────────────────────────────────────────────────────
         for idx, row in df_view.iterrows():
             _s = str(row.get('status', '') or '')
             _icons = (
@@ -108,8 +127,7 @@ with tab_lista:
                     _s = str(row.get('status', '') or '')
                     st.caption(f"Status: {_s or '—'}"
                                + (" · Watchlist" if row.get('watchlist') else ""))
-                    matched = row.get('matched', False)
-                    if matched:
+                    if row.get('matched', False):
                         st.caption("✅ Note abbinate")
                     else:
                         st.caption("⚠️ Note non abbinate")
@@ -189,140 +207,10 @@ with tab_lista:
                             st.session_state[f"editing_{idx}"] = False
                             st.rerun()
 
-with tab_match:
-    confirmed = load_confirmed_matches()
-    st.header("Abbina note")
-    st.caption("Collega ogni tuo profumo al dataset Kaggle per ottenere le note olfattive.")
 
-    df_ratings = load_ratings()
-    confirmed = load_confirmed_matches()
-
-    if df_ratings.empty:
-        st.info("Nessuna fragranza nella lista.")
-    else:
-        # statistiche matching
-        n_total = len(df_ratings)
-        n_confirmed = len([v for v in confirmed.values() if v is not None])
-        n_skipped = len([v for v in confirmed.values() if v is None])
-        n_pending = n_total - len(confirmed)
-
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Totale", n_total)
-        col2.metric("Abbinate", n_confirmed)
-        col3.metric("Saltate", n_skipped)
-        col4.metric("Da fare", n_pending)
-
-        st.divider()
-
-        # ── Ricerca manuale nel dataset ───────────────────────────────────
-        with st.expander("🔍 Cerca manualmente nel dataset"):
-            search_query = st.text_input("Cerca per nome o brand",
-                                          placeholder="es. philosykos, diptyque, fig...")
-            if search_query:
-                mask = (
-                    df_dataset['name_clean'].str.contains(
-                        search_query.lower(), na=False) |
-                    df_dataset['brand_clean'].str.contains(
-                        search_query.lower(), na=False)
-                )
-                df_search = df_dataset[mask].head(100)
-                if df_search.empty:
-                    st.caption("Nessun risultato.")
-                else:
-                    # seleziona a quale profumo della tua lista abbinare
-                    my_options = df_ratings.apply(
-                        lambda r: f"{r['brand']} — {r['name']} {r.get('form', '')} ({str(r.get('status', '') or '—')})",
-                        axis=1
-                    ).tolist()
-                    target = st.selectbox("Abbina a quale tuo profumo?",
-                                          my_options, key="manual_target")
-                    target_label = target.split(' (')[0]  # rimuove la parte " (Decant)" ecc.
-                    matches = df_ratings[
-                        df_ratings.apply(
-                            lambda r: f"{r['brand']} — {r['name']} {r.get('form', '')}",
-                            axis=1
-                        ).str.strip() == target_label.strip()
-                    ]
-                    if matches.empty:
-                        st.error("Profumo non trovato nella lista.")
-                        st.stop()
-                    target_idx = matches.index[0]
-
-                    for _, sr in df_search.iterrows():
-                        col1, col2 = st.columns([4, 1])
-                        with col1:
-                            st.caption(
-                                f"**{sr['Brand']} — {sr['Perfume']}** | "
-                                f"Top: {sr.get('Top', '—')} | "
-                                f"Middle: {sr.get('Middle', '—')} | "
-                                f"Base: {sr.get('Base', '—')}"
-                            )
-                        with col2:
-                            if st.button("✓ Usa",
-                                         key=f"manual_{sr.name}"):
-                                confirmed[target_idx] = int(sr.name)
-                                save_confirmed_matches(confirmed)
-                                df_enriched = enrich_ratings(df_ratings, confirmed)
-                                save_ratings(df_enriched)
-                                st.success("Abbinato!")
-                                st.rerun()
-
-        st.divider()
-
-        # mostra solo profumi non ancora processati
-        show_pending = st.checkbox("Mostra solo da abbinare", value=True)
-
-        for idx, row in df_ratings.iterrows():
-            if show_pending and idx in confirmed:
-                continue
-
-            already = confirmed.get(idx)
-            status = "✅" if (idx in confirmed and already is not None) else \
-                     "⏭️" if (idx in confirmed and already is None) else "⏳"
-
-            with st.expander(
-                f"{status} {row['brand']} — {row['name']} {row.get('form', '')}"
-            ):
-                st.caption(f"Il tuo voto: {row['rating']} | {row.get('comment', '')}")
-
-                candidates = get_candidates(row['brand'], row['name'], df_dataset, n=15, threshold=35)
-
-                if not candidates:
-                    st.warning("Nessun candidato trovato nel dataset.")
-                    if st.button("Segna come non trovato", key=f"skip_{idx}"):
-                        confirmed[idx] = None
-                        save_confirmed_matches(confirmed)
-                        st.rerun()
-                else:
-                    st.write("Seleziona il profumo corretto:")
-                    for c in candidates:
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.write(f"**{c['brand']} — {c['name']}** (score: {c['score']})")
-                            if c['top']:
-                                st.caption(f"Top: {c['top']}")
-                            if c['middle']:
-                                st.caption(f"Middle: {c['middle']}")
-                            if c['base']:
-                                st.caption(f"Base: {c['base']}")
-                            if c['accords']:
-                                st.caption(f"Accords: {c['accords']}")
-                        with col2:
-                            if st.button("✓ Questo",
-                                         key=f"match_{idx}_{c['dataset_idx']}"):
-                                confirmed[idx] = c['dataset_idx']
-                                save_confirmed_matches(confirmed)
-                                # aggiorna CSV ratings con le note
-                                df_enriched = enrich_ratings(df_ratings, confirmed)
-                                save_ratings(df_enriched)
-                                st.success("Abbinato!")
-                                st.rerun()
-
-                    if st.button("⏭️ Nessuno di questi",
-                                 key=f"none_{idx}"):
-                        confirmed[idx] = None
-                        save_confirmed_matches(confirmed)
-                        st.rerun()
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tab 2 — Profilo
+# ═══════════════════════════════════════════════════════════════════════════════
 
 with tab_profilo:
     st.header("Profilo olfattivo")
@@ -332,7 +220,7 @@ with tab_profilo:
     if df_ratings.empty:
         st.info("Nessuna fragranza nella lista.")
     else:
-        # ── Pre-calcolo top_accords (serve sia per metric che per radar) ──────
+        # ── Pre-calcolo top_accords ───────────────────────────────────────────
         df_matched = df_ratings[df_ratings['matched'] == True] \
             if 'matched' in df_ratings.columns else pd.DataFrame()
 
@@ -355,16 +243,16 @@ with tab_profilo:
             top_accords = sorted(norm_scores.items(),
                                  key=lambda x: x[1], reverse=True)[:8]
 
-        # ── Statistiche — full width ──────────────────────────────────────────
+        # ── Statistiche ───────────────────────────────────────────────────────
         st.subheader("Statistiche")
 
-        _status_s     = df_ratings.get('status', pd.Series('', index=df_ratings.index)).fillna('')
-        total         = len(df_ratings)
-        avg_rating    = df_ratings['rating'].mean()
-        bottles       = int((_status_s == 'Bottle').sum())
-        decants       = int((_status_s == 'Decant').sum())
+        _status_s         = df_ratings.get('status', pd.Series('', index=df_ratings.index)).fillna('')
+        total             = len(df_ratings)
+        avg_rating        = df_ratings['rating'].mean()
+        bottles           = int((_status_s == 'Bottle').sum())
+        decants           = int((_status_s == 'Decant').sum())
         bottle_candidates = int((df_ratings['bottle_candidate'] == True).sum())
-        fam_preferita = top_accords[0][0].capitalize() if top_accords else '—'
+        fam_preferita     = top_accords[0][0].capitalize() if top_accords else '—'
 
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.metric("Totale",             total)
@@ -376,7 +264,7 @@ with tab_profilo:
 
         st.divider()
 
-        # ── Bar chart + Radar — due colonne ───────────────────────────────────
+        # ── Bar chart + Radar ─────────────────────────────────────────────────
         col_left, col_right = st.columns([1, 1])
 
         with col_left:
@@ -400,7 +288,7 @@ with tab_profilo:
         with col_right:
             st.subheader("Radar olfattivo")
             if df_matched.empty:
-                st.info("Abbina le note nel tab 'Abbina note' per vedere il radar.")
+                st.info("Abbina le note in Gestione → Abbina note per vedere il radar.")
             else:
                 labels = [a for a, _ in top_accords]
                 values = [v for _, v in top_accords]
@@ -435,30 +323,16 @@ with tab_profilo:
 
         st.divider()
 
-        # ── Scatter plot — full width ─────────────────────────────────────────
+        # ── Scatter — usa il filtro da session_state (impostato in La mia lista)
         st.subheader("La tua collezione nello spazio olfattivo")
 
-        _SCATTER_OPTS = {
-            'all':            'Tutti',
-            'tried_or_owned': 'Provati o posseduti (Bottle+Decant+Sample+Tested)',
-            'owned':          'Solo posseduti (Bottle+Decant+Sample)',
-            'bottle_only':    'Solo bottiglie',
-        }
-        scatter_filter = st.selectbox(
-            "Visibilità grafico",
-            options=list(_SCATTER_OPTS.keys()),
-            format_func=lambda x: _SCATTER_OPTS[x],
-            key='scatter_filter',
-        )
-
+        _sf = st.session_state.get('scatter_filter', 'all')
         _sf_status = df_ratings.get('status', pd.Series('', index=df_ratings.index)).fillna('')
-        if scatter_filter == 'tried_or_owned':
-            _sf_mask = _sf_status.isin(['Bottle', 'Decant', 'Sample', 'Tested'])
-            df_for_scatter = df_ratings[_sf_mask]
-        elif scatter_filter == 'owned':
-            _sf_mask = _sf_status.isin(['Bottle', 'Decant', 'Sample'])
-            df_for_scatter = df_ratings[_sf_mask]
-        elif scatter_filter == 'bottle_only':
+        if _sf == 'tried_or_owned':
+            df_for_scatter = df_ratings[_sf_status.isin(['Bottle', 'Decant', 'Sample', 'Tested'])]
+        elif _sf == 'owned':
+            df_for_scatter = df_ratings[_sf_status.isin(['Bottle', 'Decant', 'Sample'])]
+        elif _sf == 'bottle_only':
             df_for_scatter = df_ratings[_sf_status == 'Bottle']
         else:
             df_for_scatter = df_ratings
@@ -466,7 +340,8 @@ with tab_profilo:
         df_scatter = compute_scatter_data(df_for_scatter)
 
         if df_scatter.empty:
-            st.caption("Abbina qualche profumo per vedere il grafico.")
+            st.caption(f"Abbina qualche profumo per vedere il grafico "
+                       f"(filtro attuale: {_SCATTER_OPTS.get(_sf, _sf)}).")
         else:
             rng = np.random.default_rng(seed=42)
             jitter = 0.05
@@ -474,7 +349,6 @@ with tab_profilo:
             y = df_scatter['depth']     + rng.uniform(-jitter, jitter, len(df_scatter))
 
             fig_scatter = go.Figure()
-
             fig_scatter.add_trace(go.Scatter(
                 x=x, y=y,
                 mode='markers',
@@ -495,7 +369,6 @@ with tab_profilo:
                 ),
                 hovertemplate='%{text}<extra></extra>',
             ))
-
             for label, size in [(' ', 6), (' ', 12), ('Intensità: bassa / media / alta', 18)]:
                 fig_scatter.add_trace(go.Scatter(
                     x=[None], y=[None],
@@ -504,186 +377,214 @@ with tab_profilo:
                     marker=dict(size=size, color='rgba(120,120,120,0.6)',
                                 line=dict(width=1, color='rgba(0,0,0,0.2)')),
                 ))
-
             fig_scatter.update_layout(
                 xaxis=dict(title='Freschezza', range=[-0.15, 1.15], zeroline=False),
                 yaxis=dict(title='Profondità', range=[-0.15, 1.15], zeroline=False),
-                legend=dict(
-                    orientation='h',
-                    x=0, y=1.08,
-                    xanchor='left',
-                    yanchor='bottom',
-                ),
+                legend=dict(orientation='h', x=0, y=1.08,
+                            xanchor='left', yanchor='bottom'),
                 height=500,
                 margin=dict(l=40, r=40, t=60, b=40),
                 plot_bgcolor='rgba(240,240,240,0.1)',
             )
-
             st.plotly_chart(fig_scatter, width='stretch', key="scatter_collezione")
 
         st.divider()
 
-        # ── Analisi LLM — full width ──────────────────────────────────────────
+        # ── Stubs sezioni future ──────────────────────────────────────────────
+        with st.expander("📈 Deriva temporale [coming soon]"):
+            st.info("In arrivo: analisi dell'evoluzione dei tuoi gusti nel tempo.")
+
+        with st.expander("🔍 Gap analysis [coming soon]"):
+            st.info("In arrivo: famiglie olfattive non ancora esplorate nella tua collezione.")
+
+        st.divider()
+
+        # ── Analisi LLM ───────────────────────────────────────────────────────
         st.subheader("Analisi del tuo profilo")
-        if st.button("🤖 Genera analisi profilo", type="primary"):
+        if st.button("🤖 Genera analisi profilo", type="primary", key="btn_profile_analysis"):
             with st.spinner("Analisi in corso…"):
                 try:
                     analysis = explain_profile(df_ratings)
-                    st.markdown(analysis)
+                    st.session_state['profile_analysis'] = analysis
                 except Exception as e:
-                    st.error(f"Errore: {e}")
+                    st.session_state['profile_analysis'] = f"⚠️ Errore: {e}"
+        if 'profile_analysis' in st.session_state:
+            st.markdown(st.session_state['profile_analysis'])
 
 
-with tab_raccomanda:
-    st.header("Raccomandazioni")
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tab 3 — Scopri (Raccomandazioni + Esplora stili)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+with tab_scopri:
+    st.header("Scopri")
 
     df_ratings = load_ratings()
 
-    if 'matched' not in df_ratings.columns or df_ratings['matched'].sum() == 0:
-        st.info("Abbina almeno qualche profumo nel tab 'Abbina note' per ottenere raccomandazioni.")
+    scopri_mode = st.radio(
+        "Modalità",
+        options=['profilo', 'stile'],
+        format_func=lambda x: {
+            'profilo': '🧬 Basato sul tuo profilo',
+            'stile':   '🧭 Esplora uno stile',
+        }[x],
+        horizontal=True,
+        key='scopri_mode',
+    )
+
+    st.divider()
+
+    # ─── Modalità: Raccomandazioni ────────────────────────────────────────────
+    if scopri_mode == 'profilo':
+
+        if 'matched' not in df_ratings.columns or df_ratings['matched'].sum() == 0:
+            st.info("Abbina almeno qualche profumo in Gestione → Abbina note per ottenere raccomandazioni.")
+        else:
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                n_recs = st.slider("Numero raccomandazioni", 5, 20, 10, key="recs_n")
+            with col2:
+                gender_label = st.selectbox("Genere", list(GENDER_OPTIONS.keys()),
+                                             key="recs_gender")
+                gender_val = GENDER_OPTIONS[gender_label]
+            with col3:
+                exclude_known = st.checkbox("Escludi profumi già noti", value=True,
+                                             key="recs_exclude")
+            with col4:
+                quality_pct = st.slider(
+                    "Filtro qualità", 10, 100, 40, 10,
+                    key="recs_quality",
+                    help="10% = solo profumi top | 40% = equilibrato | 100% = tutti"
+                )
+
+            st.divider()
+
+            recs_mode = st.radio(
+                "Tipo di raccomandazione",
+                options=['profilo', 'simile'],
+                format_func=lambda x: {
+                    'profilo': '🧬 Basato sul mio profilo',
+                    'simile':  '🔍 Simile a un profumo specifico',
+                }[x],
+                horizontal=True,
+                key='recs_mode',
+            )
+
+            ref_brand = ref_name = None
+            if recs_mode == 'simile':
+                known = df_ratings[['brand', 'name']].apply(
+                    lambda r: f"{r['brand']} — {r['name']}", axis=1
+                ).tolist()
+                selected = st.selectbox("Scegli profumo di riferimento", known,
+                                         key="recs_ref")
+                ref_brand, ref_name = selected.split(' — ', 1)
+
+            if st.button("✨ Genera raccomandazioni", type="primary",
+                         key="btn_generate_recs"):
+                with st.spinner("Calcolo in corso…"):
+                    if recs_mode == 'profilo':
+                        _df_recs = get_recommendations(
+                            df_ratings, df_dataset, n=n_recs,
+                            exclude_known=exclude_known,
+                            gender_filter=gender_val,
+                            quality_pct=quality_pct
+                        )
+                    else:
+                        _df_recs = get_similar_to(
+                            ref_brand, ref_name,
+                            df_ratings, df_dataset, n=n_recs,
+                            quality_pct=quality_pct
+                        )
+                st.session_state['last_recs'] = _df_recs
+                for k in list(st.session_state.keys()):
+                    if k.startswith('expl_rec_'):
+                        del st.session_state[k]
+
+            df_recs = st.session_state.get('last_recs', pd.DataFrame())
+
+            if not df_recs.empty:
+                for _i, rec in df_recs.iterrows():
+                    with st.expander(
+                        f"**{rec['brand']} — {rec['name']}** "
+                        f"(similarità: {rec['similarity']:.2f})"
+                    ):
+                        col1, col2 = st.columns([2, 1])
+                        with col1:
+                            if pd.notna(rec.get('top')):
+                                st.caption(f"Top: {rec['top']}")
+                            if pd.notna(rec.get('middle')):
+                                st.caption(f"Middle: {rec['middle']}")
+                            if pd.notna(rec.get('base')):
+                                st.caption(f"Base: {rec['base']}")
+                        with col2:
+                            if pd.notna(rec.get('accord1')):
+                                st.caption(f"Accord: {rec['accord1']}")
+                            if pd.notna(rec.get('accord2')):
+                                st.caption(f"{rec['accord2']}")
+                            st.caption(f"Genere: {rec.get('gender', '—')}")
+
+                        _expl_key = f"expl_rec_{_i}_{rec['brand']}_{rec['name']}"
+                        if st.button("🤖 Spiega perché",
+                                     key=f"explain_{_i}_{rec['brand']}_{rec['name']}"):
+                            with st.spinner("Analisi in corso…"):
+                                try:
+                                    _expl = explain_recommendation(rec.to_dict(), df_ratings)
+                                    st.session_state[_expl_key] = _expl
+                                except Exception as e:
+                                    st.session_state[_expl_key] = f"⚠️ Errore LLM: {e}"
+                            st.rerun()
+                        if _expl_key in st.session_state:
+                            st.markdown(st.session_state[_expl_key])
+            elif 'last_recs' in st.session_state:
+                st.warning("Nessuna raccomandazione trovata.")
+
+    # ─── Modalità: Esplora stili ──────────────────────────────────────────────
     else:
+        st.caption("Scopri profumi in territori olfattivi nuovi, ancorati al tuo gusto.")
+
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            n_recs = st.slider("Numero raccomandazioni", 5, 20, 10)
+            style_label = st.selectbox("Stile da esplorare",
+                                       list(EXPLORATION_STYLES.keys()),
+                                       key="exp_style")
         with col2:
-            gender_label = st.selectbox("Genere", list(GENDER_OPTIONS.keys()))
-            gender_val = GENDER_OPTIONS[gender_label]
+            intensity = st.slider(
+                "Intensità esplorazione", 0.0, 1.0, 0.5, 0.1,
+                key="exp_intensity",
+                help="0 = vicino al tuo profilo, 1 = massimo stile nuovo"
+            )
         with col3:
-            exclude_known = st.checkbox("Escludi profumi già noti", value=True)
+            gender_label_e = st.selectbox("Genere", list(GENDER_OPTIONS.keys()),
+                                          key="gender_explore")
+            gender_val_e = GENDER_OPTIONS[gender_label_e]
         with col4:
-            quality_pct = st.slider(
-                "Filtro qualità",
-                10, 100, 40, 10,
+            quality_pct_e = st.slider(
+                "Filtro qualità %", 10, 100, 40, 10,
+                key="quality_explore",
                 help="10% = solo profumi top | 40% = equilibrato | 100% = tutti"
             )
 
         st.divider()
 
-        mode = st.radio(
-            "Modalità",
-            options=['profilo', 'simile'],
-            format_func=lambda x: {
-                'profilo': '🧬 Basato sul mio profilo',
-                'simile':  '🔍 Simile a un profumo specifico',
-            }[x],
-            horizontal=True
-        )
-
-        if mode == 'simile':
-            known = df_ratings[['brand', 'name']].apply(
-                lambda r: f"{r['brand']} — {r['name']}", axis=1
-            ).tolist()
-            selected = st.selectbox("Scegli profumo di riferimento", known)
-            ref_brand, ref_name = selected.split(' — ', 1)
-
-        if st.button("✨ Genera raccomandazioni", type="primary"):
+        if st.button("🧭 Esplora", type="primary", key="btn_esplora"):
             with st.spinner("Calcolo in corso…"):
-                if mode == 'profilo':
-                    _df_recs = get_recommendations(
-                        df_ratings, df_dataset, n=n_recs,
-                        exclude_known=exclude_known,
-                        gender_filter=gender_val,
-                        quality_pct=quality_pct
-                    )
-                else:
-                    _df_recs = get_similar_to(
-                        ref_brand, ref_name,
-                        df_ratings, df_dataset, n=n_recs,
-                        quality_pct=quality_pct
-                    )
-            st.session_state['last_recs'] = _df_recs
-            # clear stale explanations when recs are regenerated
-            for k in list(st.session_state.keys()):
-                if k.startswith('expl_rec_'):
-                    del st.session_state[k]
+                df_exp = get_exploration_recommendations(
+                    df_ratings, df_dataset,
+                    explore_style=EXPLORATION_STYLES[style_label],
+                    intensity=intensity,
+                    n=10,
+                    gender_filter=gender_val_e,
+                    quality_pct=quality_pct_e
+                )
+            st.session_state['last_exp'] = df_exp
 
-        df_recs = st.session_state.get('last_recs', pd.DataFrame())
+        df_exp = st.session_state.get('last_exp', pd.DataFrame())
 
-        if not df_recs.empty:
-            for _i, rec in df_recs.iterrows():
-                with st.expander(
-                    f"**{rec['brand']} — {rec['name']}** "
-                    f"(similarità: {rec['similarity']:.2f})"
-                ):
-                    col1, col2 = st.columns([2, 1])
-                    with col1:
-                        if pd.notna(rec.get('top')):
-                            st.caption(f"Top: {rec['top']}")
-                        if pd.notna(rec.get('middle')):
-                            st.caption(f"Middle: {rec['middle']}")
-                        if pd.notna(rec.get('base')):
-                            st.caption(f"Base: {rec['base']}")
-                    with col2:
-                        if pd.notna(rec.get('accord1')):
-                            st.caption(f"Accord: {rec['accord1']}")
-                        if pd.notna(rec.get('accord2')):
-                            st.caption(f"{rec['accord2']}")
-                        st.caption(f"Genere: {rec.get('gender', '—')}")
-
-                    _expl_key = f"expl_rec_{_i}_{rec['brand']}_{rec['name']}"
-                    if st.button("🤖 Spiega perché", key=f"explain_{_i}_{rec['brand']}_{rec['name']}"):
-                        with st.spinner("Analisi in corso…"):
-                            try:
-                                _expl = explain_recommendation(rec.to_dict(), df_ratings)
-                                st.session_state[_expl_key] = _expl
-                            except Exception as e:
-                                st.session_state[_expl_key] = f"⚠️ Errore LLM: {e}"
-                        st.rerun()
-                    if _expl_key in st.session_state:
-                        st.markdown(st.session_state[_expl_key])
-        elif 'last_recs' in st.session_state:
-            st.warning("Nessuna raccomandazione trovata.")
-
-with tab_esplora:
-    st.header("Esplora stili")
-    st.caption("Scopri profumi in territori olfattivi nuovi, ancorati al tuo gusto.")
-
-    df_ratings = load_ratings()
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        style_label = st.selectbox("Stile da esplorare",
-                                list(EXPLORATION_STYLES.keys()))
-    with col2:
-        intensity = st.slider(
-            "Intensità esplorazione",
-            0.0, 1.0, 0.5, 0.1,
-            help="0 = vicino al tuo profilo, 1 = massimo stile nuovo"
-        )
-    with col3:
-        gender_label_e = st.selectbox("Genere", list(GENDER_OPTIONS.keys()),
-                                    key="gender_explore")
-        gender_val_e = GENDER_OPTIONS[gender_label_e]
-    with col4:
-        quality_pct_e = st.slider(
-            "Filtro qualità %", 10, 100, 40, 10,
-            key="quality_explore",
-            help="10% = solo profumi top | 40% = equilibrato | 100% = tutti"
-        )
-
-    st.divider()
-
-    if st.button("🧭 Esplora", type="primary"):
-        with st.spinner("Calcolo in corso…"):
-            style_query = EXPLORATION_STYLES[style_label]
-            df_exp = get_exploration_recommendations(
-                df_ratings, df_dataset,
-                explore_style=style_query,
-                intensity=intensity,
-                n=10,
-                gender_filter=gender_val_e,
-                quality_pct=quality_pct_e
-            )
-
-        if df_exp.empty:
-            st.warning("Nessun risultato trovato.")
-        else:
-            # spiegazione LLM
+        if not df_exp.empty:
             if 'matched' in df_ratings.columns and df_ratings['matched'].sum() > 0:
                 with st.spinner("Generando spiegazione…"):
                     try:
-                        explanation = explain_exploration(
-                            style_label, df_ratings, df_exp)
+                        explanation = explain_exploration(style_label, df_ratings, df_exp)
                         st.info(explanation)
                     except Exception as e:
                         st.caption(f"LLM non disponibile: {e}")
@@ -707,11 +608,18 @@ with tab_esplora:
                         if pd.notna(rec.get('accord1')):
                             st.caption(f"Accord: {rec['accord1']}")
                         st.caption(f"Genere: {rec.get('gender', '—')}")
+        elif 'last_exp' in st.session_state:
+            st.warning("Nessun risultato trovato.")
 
-with tab_aggiungi:
-    st.header("Aggiungi fragranza")
 
-    # ── Bug fix: duplicate dialog lives OUTSIDE the form so buttons work ──────
+# ═══════════════════════════════════════════════════════════════════════════════
+# Tab 4 — Gestione (Aggiungi + Abbina note + Arricchisci note)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+with tab_gestione:
+    st.header("Gestione")
+
+    # ── Duplicate dialog BEFORE inner tabs so buttons survive reruns ──────────
     if 'pending_duplicate' in st.session_state:
         _pd = st.session_state['pending_duplicate']
         st.warning(
@@ -730,171 +638,330 @@ with tab_aggiungi:
                 st.session_state.pop('pending_duplicate', None)
                 st.rerun()
 
-    with st.form("add_fragrance"):
-        col1, col2 = st.columns(2)
-        with col1:
-            new_brand = st.text_input("Brand *")
-            new_name = st.text_input("Nome *")
-            new_form = st.selectbox("Formato", ["EdP", "EdT", "Extrait", "Parfum", "EdC", ""])
-        with col2:
-            new_status = st.selectbox(
-                "Status",
-                ["", "Bottle", "Decant", "Sample", "Tested"],
-                format_func=lambda x: x or "— Nessuno —",
-                help="Bottle=possiedi la bottiglia · Decant/Sample=formato ridotto · Tested=provato non posseduto"
-            )
-            new_watchlist = st.checkbox("Watchlist", help="Segnalibro, disponibile con qualsiasi status")
-            new_bottle = st.checkbox(
-                "Bottle candidate",
-                help="Ignorato se Status = Bottle (già posseduto)"
-            )
-            new_rating = st.select_slider(
-                "Rating *",
-                options=[r/10 for r in range(
-                    int(MIN_RATING*10),
-                    int(MAX_RATING*10)+1,
-                    int(RATING_STEP*10)
-                )]
-            )
+    gtab_aggiungi, gtab_match, gtab_arricchisci = st.tabs([
+        "➕ Aggiungi",
+        "🔗 Abbina note",
+        "🔍 Arricchisci note",
+    ])
 
-        new_comment = st.text_area("Commento", placeholder="Note personali, impressioni, occasioni d'uso…")
-
-        submitted = st.form_submit_button("➕ Aggiungi", type="primary")
-
-        if submitted:
-            if not new_brand or not new_name:
-                st.error("Brand e nome sono obbligatori.")
-            elif check_duplicate(new_brand, new_name):
-                st.session_state['pending_duplicate'] = {
-                    'brand':            new_brand,
-                    'name':             new_name,
-                    'form':             new_form,
-                    'status':           new_status,
-                    'watchlist':        new_watchlist,
-                    'rating':           new_rating,
-                    'comment':          new_comment,
-                    'bottle_candidate': new_bottle,
-                }
-                st.rerun()
-            else:
-                add_rating(
-                    brand=new_brand,
-                    name=new_name,
-                    form=new_form,
-                    status=new_status,
-                    watchlist=new_watchlist,
-                    rating=new_rating,
-                    comment=new_comment,
-                    bottle_candidate=new_bottle,
+    # ─── Gestione → Aggiungi ──────────────────────────────────────────────────
+    with gtab_aggiungi:
+        with st.form("add_fragrance"):
+            col1, col2 = st.columns(2)
+            with col1:
+                new_brand = st.text_input("Brand *")
+                new_name  = st.text_input("Nome *")
+                new_form  = st.selectbox("Formato",
+                                         ["EdP", "EdT", "Extrait", "Parfum", "EdC", ""])
+            with col2:
+                new_status = st.selectbox(
+                    "Status",
+                    ["", "Bottle", "Decant", "Sample", "Tested"],
+                    format_func=lambda x: x or "— Nessuno —",
+                    help="Bottle=possiedi la bottiglia · Decant/Sample=formato ridotto · "
+                         "Tested=provato non posseduto"
                 )
-                st.success(f"✓ {new_brand} {new_name} aggiunto con rating {new_rating}!")
+                new_watchlist = st.checkbox(
+                    "Watchlist",
+                    help="Segnalibro, disponibile con qualsiasi status"
+                )
+                new_bottle = st.checkbox(
+                    "Bottle candidate",
+                    help="Ignorato se Status = Bottle (già posseduto)"
+                )
+                new_rating = st.select_slider(
+                    "Rating *",
+                    options=[r/10 for r in range(
+                        int(MIN_RATING*10),
+                        int(MAX_RATING*10)+1,
+                        int(RATING_STEP*10)
+                    )]
+                )
 
+            new_comment = st.text_area(
+                "Commento",
+                placeholder="Note personali, impressioni, occasioni d'uso…"
+            )
 
-with tab_arricchisci:
-    st.header("Arricchisci note")
-    st.caption("Cerca online le note olfattive per i profumi senza piramide.")
+            submitted = st.form_submit_button("➕ Aggiungi", type="primary")
 
-    df_ratings = load_ratings()
-
-    # filtra: non matchati O matchati ma senza note
-    matched = df_ratings.get('matched', pd.Series(False, index=df_ratings.index)).fillna(False).astype(bool)
-    top     = df_ratings.get('top_notes', pd.Series('', index=df_ratings.index)).fillna('')
-    middle  = df_ratings.get('middle_notes', pd.Series('', index=df_ratings.index)).fillna('')
-    base    = df_ratings.get('base_notes', pd.Series('', index=df_ratings.index)).fillna('')
-
-    mask = (~matched) | (matched & (top == '') & (middle == '') & (base == ''))
-    df_to_enrich = df_ratings[mask]
-
-    if df_to_enrich.empty:
-        st.success("Tutti i profumi hanno già le note olfattive!")
-    else:
-        st.info(f"{len(df_to_enrich)} profumi senza note olfattive complete.")
-
-        for idx, row in df_to_enrich.iterrows():
-            with st.expander(f"**{row['brand']} — {row['name']}** {row.get('form', '')}"):
-
-                col1, col2 = st.columns([2, 1])
-                with col1:
-                    st.caption(f"Rating: {row['rating']} | {row.get('comment', '')}")
-                    matched = row.get('matched', False)
-                    st.caption("✅ Matchato nel dataset (note mancanti)" if matched
-                               else "⚠️ Non matchato nel dataset")
-                with col2:
-                    search_clicked = st.button(
-                        "🔍 Cerca online",
-                        key=f"search_{idx}"
+            if submitted:
+                if not new_brand or not new_name:
+                    st.error("Brand e nome sono obbligatori.")
+                elif check_duplicate(new_brand, new_name):
+                    st.session_state['pending_duplicate'] = {
+                        'brand':            new_brand,
+                        'name':             new_name,
+                        'form':             new_form,
+                        'status':           new_status,
+                        'watchlist':        new_watchlist,
+                        'rating':           new_rating,
+                        'comment':          new_comment,
+                        'bottle_candidate': new_bottle,
+                    }
+                    st.rerun()
+                else:
+                    add_rating(
+                        brand=new_brand,
+                        name=new_name,
+                        form=new_form,
+                        status=new_status,
+                        watchlist=new_watchlist,
+                        rating=new_rating,
+                        comment=new_comment,
+                        bottle_candidate=new_bottle,
+                    )
+                    st.success(
+                        f"✓ {new_brand} {new_name} aggiunto con rating {new_rating}!"
                     )
 
-                # risultati della ricerca — persistiti in session_state
-                result_key = f"enrich_result_{idx}"
+    # ─── Gestione → Abbina note ───────────────────────────────────────────────
+    with gtab_match:
+        st.caption("Collega ogni tuo profumo al dataset Kaggle per ottenere le note olfattive.")
 
-                if search_clicked:
-                    with st.spinner(f"Cerco su Fragrantica…"):
-                        result = enrich_from_web(row['brand'], row['name'])
-                    if result:
-                        st.session_state[result_key] = result
+        df_ratings = load_ratings()
+        confirmed  = load_confirmed_matches()
+
+        if df_ratings.empty:
+            st.info("Nessuna fragranza nella lista.")
+        else:
+            n_total    = len(df_ratings)
+            n_confirmed = len([v for v in confirmed.values() if v is not None])
+            n_skipped   = len([v for v in confirmed.values() if v is None])
+            n_pending   = n_total - len(confirmed)
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Totale",   n_total)
+            col2.metric("Abbinate", n_confirmed)
+            col3.metric("Saltate",  n_skipped)
+            col4.metric("Da fare",  n_pending)
+
+            st.divider()
+
+            with st.expander("🔍 Cerca manualmente nel dataset"):
+                search_query = st.text_input(
+                    "Cerca per nome o brand",
+                    placeholder="es. philosykos, diptyque, fig..."
+                )
+                if search_query:
+                    mask = (
+                        df_dataset['name_clean'].str.contains(
+                            search_query.lower(), na=False) |
+                        df_dataset['brand_clean'].str.contains(
+                            search_query.lower(), na=False)
+                    )
+                    df_search = df_dataset[mask].head(100)
+                    if df_search.empty:
+                        st.caption("Nessun risultato.")
                     else:
-                        st.session_state[result_key] = 'not_found'
+                        my_options = df_ratings.apply(
+                            lambda r: (
+                                f"{r['brand']} — {r['name']} {r.get('form', '')} "
+                                f"({str(r.get('status', '') or '—')})"
+                            ),
+                            axis=1
+                        ).tolist()
+                        target = st.selectbox("Abbina a quale tuo profumo?",
+                                               my_options, key="manual_target")
+                        target_label = target.split(' (')[0]
+                        matches = df_ratings[
+                            df_ratings.apply(
+                                lambda r: f"{r['brand']} — {r['name']} {r.get('form', '')}",
+                                axis=1
+                            ).str.strip() == target_label.strip()
+                        ]
+                        if matches.empty:
+                            st.error("Profumo non trovato nella lista.")
+                            st.stop()
+                        target_idx = matches.index[0]
 
-                # mostra risultato se presente
-                if result_key in st.session_state:
-                    result = st.session_state[result_key]
-
-                    if result == 'not_found':
-                        st.warning("Nessun risultato trovato su Fragrantica.")
-                    else:
-                        st.divider()
-
-                        # URL modificabile — precompilato con quello trovato
-                        url_input = st.text_input(
-                            "URL Fragrantica",
-                            value=result['url'],
-                            key=f"url_input_{idx}",
-                            help="Puoi modificare l'URL se il profumo trovato non è quello corretto"
-                        )
-
-                        # se l'URL è stato cambiato, offri di ricaricare
-                        if url_input != result['url']:
-                            if st.button("🔄 Ricarica con nuovo URL", key=f"reload_{idx}"):
-                                with st.spinner("Carico…"):
-                                    new_result = scrape_fragrantica(url_input)
-                                if new_result:
-                                    new_result['url'] = url_input
-                                    st.session_state[result_key] = new_result
-                                    st.rerun()
-                                else:
-                                    st.error("Nessuna nota trovata a quell'URL.")
-
-                        col_a, col_b = st.columns(2)
-                        with col_a:
-                            st.markdown("**Note trovate:**")
-                            if result['top']:
-                                st.caption(f"Top: {result['top']}")
-                            if result['middle']:
-                                st.caption(f"Middle: {result['middle']}")
-                            if result['base']:
-                                st.caption(f"Base: {result['base']}")
-                            if not any([result['top'], result['middle'], result['base']]):
-                                st.caption("Nessuna piramide disponibile.")
-                        with col_b:
-                            st.markdown("**Accords:**")
-                            st.caption(result['accords'] or '—')
-
-                        st.divider()
-                        col_save, col_skip = st.columns(2)
-                        with col_save:
-                            if st.button("✅ Salva", key=f"save_{idx}", type="primary"):
-                                save_enriched_notes(
-                                    idx=idx,
-                                    top=result['top'],
-                                    middle=result['middle'],
-                                    base=result['base'],
-                                    accords=result['accords'],
+                        for _, sr in df_search.iterrows():
+                            col1, col2 = st.columns([4, 1])
+                            with col1:
+                                st.caption(
+                                    f"**{sr['Brand']} — {sr['Perfume']}** | "
+                                    f"Top: {sr.get('Top', '—')} | "
+                                    f"Middle: {sr.get('Middle', '—')} | "
+                                    f"Base: {sr.get('Base', '—')}"
                                 )
-                                del st.session_state[result_key]
-                                st.success("Note salvate!")
-                                st.rerun()
-                        with col_skip:
-                            if st.button("⏭️ Salta", key=f"skip_{idx}"):
-                                del st.session_state[result_key]
-                                st.rerun()
+                            with col2:
+                                if st.button("✓ Usa", key=f"manual_{sr.name}"):
+                                    confirmed[target_idx] = (
+                                        int(sr.name),
+                                        str(sr['Brand']),
+                                        str(sr['Perfume']),
+                                    )
+                                    save_confirmed_matches(confirmed)
+                                    df_enriched = enrich_ratings(df_ratings, confirmed)
+                                    save_ratings(df_enriched)
+                                    st.success("Abbinato!")
+                                    st.rerun()
+
+            st.divider()
+
+            show_pending = st.checkbox("Mostra solo da abbinare", value=True)
+
+            for idx, row in df_ratings.iterrows():
+                if show_pending and idx in confirmed:
+                    continue
+
+                already = confirmed.get(idx)
+                _match_status = (
+                    "✅" if (idx in confirmed and already is not None) else
+                    "⏭️" if (idx in confirmed and already is None) else
+                    "⏳"
+                )
+
+                with st.expander(
+                    f"{_match_status} {row['brand']} — {row['name']} {row.get('form', '')}"
+                ):
+                    st.caption(f"Il tuo voto: {row['rating']} | {row.get('comment', '')}")
+
+                    candidates = get_candidates(
+                        row['brand'], row['name'], df_dataset, n=15, threshold=35
+                    )
+
+                    if not candidates:
+                        st.warning("Nessun candidato trovato nel dataset.")
+                        if st.button("Segna come non trovato",
+                                     key=f"match_skip_{idx}"):
+                            confirmed[idx] = None
+                            save_confirmed_matches(confirmed)
+                            st.rerun()
+                    else:
+                        st.write("Seleziona il profumo corretto:")
+                        for c in candidates:
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                st.write(f"**{c['brand']} — {c['name']}** "
+                                         f"(score: {c['score']})")
+                                if c['top']:
+                                    st.caption(f"Top: {c['top']}")
+                                if c['middle']:
+                                    st.caption(f"Middle: {c['middle']}")
+                                if c['base']:
+                                    st.caption(f"Base: {c['base']}")
+                                if c['accords']:
+                                    st.caption(f"Accords: {c['accords']}")
+                            with col2:
+                                if st.button("✓ Questo",
+                                             key=f"match_{idx}_{c['dataset_idx']}"):
+                                    confirmed[idx] = (
+                                        c['dataset_idx'],
+                                        c['brand'],
+                                        c['name'],
+                                    )
+                                    save_confirmed_matches(confirmed)
+                                    df_enriched = enrich_ratings(df_ratings, confirmed)
+                                    save_ratings(df_enriched)
+                                    st.success("Abbinato!")
+                                    st.rerun()
+
+                        if st.button("⏭️ Nessuno di questi", key=f"none_{idx}"):
+                            confirmed[idx] = None
+                            save_confirmed_matches(confirmed)
+                            st.rerun()
+
+    # ─── Gestione → Arricchisci note ─────────────────────────────────────────
+    with gtab_arricchisci:
+        st.caption("Cerca online le note olfattive per i profumi senza piramide.")
+
+        df_ratings = load_ratings()
+
+        _matched = df_ratings.get('matched',    pd.Series(False, index=df_ratings.index)).fillna(False).astype(bool)
+        _top     = df_ratings.get('top_notes',  pd.Series('',    index=df_ratings.index)).fillna('')
+        _middle  = df_ratings.get('middle_notes', pd.Series('',  index=df_ratings.index)).fillna('')
+        _base    = df_ratings.get('base_notes', pd.Series('',    index=df_ratings.index)).fillna('')
+
+        mask = (~_matched) | (_matched & (_top == '') & (_middle == '') & (_base == ''))
+        df_to_enrich = df_ratings[mask]
+
+        if df_to_enrich.empty:
+            st.success("Tutti i profumi hanno già le note olfattive!")
+        else:
+            st.info(f"{len(df_to_enrich)} profumi senza note olfattive complete.")
+
+            for idx, row in df_to_enrich.iterrows():
+                with st.expander(
+                    f"**{row['brand']} — {row['name']}** {row.get('form', '')}"
+                ):
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.caption(f"Rating: {row['rating']} | {row.get('comment', '')}")
+                        st.caption(
+                            "✅ Matchato nel dataset (note mancanti)"
+                            if row.get('matched', False)
+                            else "⚠️ Non matchato nel dataset"
+                        )
+                    with col2:
+                        search_clicked = st.button("🔍 Cerca online",
+                                                    key=f"search_{idx}")
+
+                    result_key = f"enrich_result_{idx}"
+
+                    if search_clicked:
+                        with st.spinner("Cerco su Fragrantica…"):
+                            result = enrich_from_web(row['brand'], row['name'])
+                        st.session_state[result_key] = result if result else 'not_found'
+
+                    if result_key in st.session_state:
+                        result = st.session_state[result_key]
+
+                        if result == 'not_found':
+                            st.warning("Nessun risultato trovato su Fragrantica.")
+                        else:
+                            st.divider()
+
+                            url_input = st.text_input(
+                                "URL Fragrantica",
+                                value=result['url'],
+                                key=f"url_input_{idx}",
+                                help="Puoi modificare l'URL se il profumo trovato non è quello corretto"
+                            )
+
+                            if url_input != result['url']:
+                                if st.button("🔄 Ricarica con nuovo URL",
+                                             key=f"reload_{idx}"):
+                                    with st.spinner("Carico…"):
+                                        new_result = scrape_fragrantica(url_input)
+                                    if new_result:
+                                        new_result['url'] = url_input
+                                        st.session_state[result_key] = new_result
+                                        st.rerun()
+                                    else:
+                                        st.error("Nessuna nota trovata a quell'URL.")
+
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                st.markdown("**Note trovate:**")
+                                if result['top']:
+                                    st.caption(f"Top: {result['top']}")
+                                if result['middle']:
+                                    st.caption(f"Middle: {result['middle']}")
+                                if result['base']:
+                                    st.caption(f"Base: {result['base']}")
+                                if not any([result['top'], result['middle'], result['base']]):
+                                    st.caption("Nessuna piramide disponibile.")
+                            with col_b:
+                                st.markdown("**Accords:**")
+                                st.caption(result['accords'] or '—')
+
+                            st.divider()
+                            col_save, col_skip = st.columns(2)
+                            with col_save:
+                                if st.button("✅ Salva", key=f"save_{idx}",
+                                             type="primary"):
+                                    save_enriched_notes(
+                                        idx=idx,
+                                        top=result['top'],
+                                        middle=result['middle'],
+                                        base=result['base'],
+                                        accords=result['accords'],
+                                    )
+                                    del st.session_state[result_key]
+                                    st.success("Note salvate!")
+                                    st.rerun()
+                            with col_skip:
+                                if st.button("⏭️ Salta", key=f"enrich_skip_{idx}"):
+                                    del st.session_state[result_key]
+                                    st.rerun()
