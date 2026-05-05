@@ -18,37 +18,67 @@ def build_note_string(row) -> str:
     return ' '.join(parts).lower()
 
 
+def _status_weight(row) -> float:
+    """
+    Returns multiplier based on ownership status and bottle_candidate flag.
+    Bottle → 1.5x
+    Decant/Sample/Tested + bottle_candidate → 1.2x
+    Decant/Sample/Tested → 1.0x
+    No status + watchlist only → 0.0 (excluded from profile)
+    """
+    status = str(row.get('status', '')).strip()
+    bc = bool(row.get('bottle_candidate', False))
+    watchlist = bool(row.get('watchlist', False))
+    if status == 'Bottle':
+        return 1.5
+    if status in ('Decant', 'Sample', 'Tested'):
+        return 1.2 if bc else 1.0
+    if not status and watchlist:
+        return 0.0
+    return 1.0
+
+
 def build_personal_profile(df_ratings: pd.DataFrame) -> dict:
     """
-    Calcola il profilo olfattivo personale come media pesata per rating.
+    Calcola il profilo olfattivo personale come media pesata per rating e status.
     Restituisce dict con:
         - note_string: stringa pesata di note preferite
         - top_notes: note più amate (rating >= 8)
         - avoid_notes: note associate a rating bassi (<= 5.5)
+
+    Pesi status:
+        Bottle → 1.5x | Decant/Sample/Tested + BC → 1.2x
+        Decant/Sample/Tested → 1.0x | Watchlist senza status → escluso
     """
     df = df_ratings[df_ratings['matched'] == True].copy()
     if df.empty:
         return {'note_string': '', 'top_notes': '', 'avoid_notes': ''}
 
-    # normalizza rating a 0-1 come peso
-    df['weight'] = (df['rating'] - df['rating'].min()) / \
-                   (df['rating'].max() - df['rating'].min() + 0.001)
+    # esclude voci watchlist-only (nessuno status)
+    status_col   = df.get('status',    pd.Series('',    index=df.index)).fillna('').astype(str).str.strip()
+    watchlist_col = df.get('watchlist', pd.Series(False, index=df.index)).fillna(False)
+    df = df[~((status_col == '') & watchlist_col)]
 
-    # costruisce stringa pesata — ripete le note in proporzione al peso
+    if df.empty:
+        return {'note_string': '', 'top_notes': '', 'avoid_notes': ''}
+
+    # normalizza rating a 0-1, poi moltiplica per moltiplicatore status
+    r_min, r_max = df['rating'].min(), df['rating'].max()
+    df['_rating_w']     = (df['rating'] - r_min) / (r_max - r_min + 0.001)
+    df['_status_mult']  = df.apply(_status_weight, axis=1)
+    df['weight']        = df['_rating_w'] * df['_status_mult']
+
     weighted_parts = []
     for _, row in df.iterrows():
         note_str = build_note_string(row)
         if not note_str.strip():
             continue
-        # ripete la stringa proporzionalmente al peso (1-3 volte)
         repeats = max(1, round(row['weight'] * 3))
         weighted_parts.extend([note_str] * repeats)
 
-    # note top (rating >= 8)
     df_top = df[df['rating'] >= 8.0]
     top_notes = ' '.join(build_note_string(r) for _, r in df_top.iterrows())
 
-    # note da evitare (rating <= 5.5)
     df_avoid = df[df['rating'] <= 5.5]
     avoid_notes = ' '.join(build_note_string(r) for _, r in df_avoid.iterrows())
 
@@ -145,11 +175,21 @@ def get_recommendations(df_ratings: pd.DataFrame,
         df_ds = df_ds[df_ds['Gender'].str.lower().str.contains(
             gender_filter, na=False)]
 
-    if exclude_known and 'dataset_idx' in df_ratings.columns:
-        known_idxs = set(
-            int(idx) for idx in df_ratings['dataset_idx'].dropna()
-        )
-        df_ds = df_ds[~df_ds.index.isin(known_idxs)]
+    if exclude_known:
+        # Primary exclusion: confirmed matches via dataset_idx
+        if 'dataset_idx' in df_ratings.columns:
+            known_idxs = set(int(idx) for idx in df_ratings['dataset_idx'].dropna())
+            df_ds = df_ds[~df_ds.index.isin(known_idxs)]
+        # Secondary exclusion: brand+name match (covers unmatched personal entries)
+        personal_keys = {
+            (str(r['brand']).lower().strip(), str(r['name']).lower().strip())
+            for _, r in df_ratings.iterrows()
+        }
+        df_ds = df_ds[~df_ds.apply(
+            lambda r: (str(r['Brand']).lower().strip(),
+                       str(r['Perfume']).lower().strip()) in personal_keys,
+            axis=1
+        )]
 
     df_ds = df_ds[df_ds['note_string'].str.strip() != '']
 
@@ -268,10 +308,17 @@ def get_exploration_recommendations(df_ratings: pd.DataFrame,
             gender_filter, na=False)]
 
     if 'dataset_idx' in df_ratings.columns:
-        known_idxs = set(
-            int(idx) for idx in df_ratings['dataset_idx'].dropna()
-        )
+        known_idxs = set(int(idx) for idx in df_ratings['dataset_idx'].dropna())
         df_ds = df_ds[~df_ds.index.isin(known_idxs)]
+    personal_keys = {
+        (str(r['brand']).lower().strip(), str(r['name']).lower().strip())
+        for _, r in df_ratings.iterrows()
+    }
+    df_ds = df_ds[~df_ds.apply(
+        lambda r: (str(r['Brand']).lower().strip(),
+                   str(r['Perfume']).lower().strip()) in personal_keys,
+        axis=1
+    )]
 
     df_ds = df_ds[df_ds['note_string'].str.strip() != '']
 

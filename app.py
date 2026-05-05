@@ -46,17 +46,28 @@ with tab_lista:
         st.info("Nessuna fragranza ancora. Usa il tab Aggiungi o importa la tua lista HTML.")
     else:
         # ── Filtri ────────────────────────────────────────────────────────
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             rating_min = st.slider("Rating minimo", MIN_RATING, MAX_RATING,
                                    MIN_RATING, RATING_STEP)
         with col2:
-            only_bottles = st.checkbox("Solo bottle candidates")
+            _STATUS_OPTS = ["Tutti", "Bottle", "Decant", "Sample", "Tested",
+                            "Watchlist", "Nessuno status"]
+            status_filter = st.selectbox("Status", _STATUS_OPTS)
         with col3:
+            only_bc = st.checkbox("Solo bottle candidates")
+        with col4:
             sort_by = st.selectbox("Ordina per", ["Rating ↓", "Rating ↑", "Brand A-Z"])
 
         df_view = df_ratings.copy()
-        if only_bottles:
+        _st_col = df_view.get('status', pd.Series('', index=df_view.index)).fillna('')
+        if status_filter == "Watchlist":
+            df_view = df_view[df_view.get('watchlist', pd.Series(False, index=df_view.index)).fillna(False).astype(bool)]
+        elif status_filter == "Nessuno status":
+            df_view = df_view[_st_col.astype(str).str.strip() == '']
+        elif status_filter != "Tutti":
+            df_view = df_view[_st_col.astype(str) == status_filter]
+        if only_bc:
             df_view = df_view[df_view['bottle_candidate'] == True]
         df_view = df_view[df_view['rating'] >= rating_min]
 
@@ -70,11 +81,17 @@ with tab_lista:
         st.caption(f"{len(df_view)} fragranze")
 
         # ── Lista ─────────────────────────────────────────────────────────
+        _STATUS_ICONS = {'Bottle': '🫙', 'Decant': '🧪', 'Sample': '🧴', 'Tested': '✓'}
         for idx, row in df_view.iterrows():
+            _s = str(row.get('status', '') or '')
+            _icons = (
+                _STATUS_ICONS.get(_s, '')
+                + ('⭐' if row.get('bottle_candidate') and _s != 'Bottle' else '')
+                + ('👁' if row.get('watchlist') else '')
+            )
             with st.expander(
-                f"**{row['rating']}** — {row['brand']} {row['name']} "
-                f"{'⭐' if row.get('bottle_candidate') else ''}"
-                f"{'🫙' if row.get('ownership') == 'Full Bottle' else ''}"
+                f"**{row['rating']}** — {row['brand']} {row['name']}"
+                + (f" {_icons}" if _icons else "")
             ):
                 col1, col2 = st.columns([2, 1])
                 with col1:
@@ -88,7 +105,9 @@ with tab_lista:
                         st.caption(f"Base: {row['base_notes']}")
                 with col2:
                     st.caption(f"Forma: {row.get('form', '—')}")
-                    st.caption(f"Possesso: {row.get('ownership', '—')}")
+                    _s = str(row.get('status', '') or '')
+                    st.caption(f"Status: {_s or '—'}"
+                               + (" · Watchlist" if row.get('watchlist') else ""))
                     matched = row.get('matched', False)
                     if matched:
                         st.caption("✅ Note abbinate")
@@ -131,16 +150,21 @@ with tab_lista:
                         )
                         e_comment = st.text_area("Commento",
                                                   value=row.get('comment', ''))
-                        e_ownership = st.selectbox(
-                            "Possesso",
-                            ["Decant", "Full Bottle", "Sample", "Wishlist"],
-                            index=["Decant", "Full Bottle", "Sample",
-                                   "Wishlist"].index(row.get('ownership', 'Decant'))
-                            if row.get('ownership') in
-                            ["Decant", "Full Bottle", "Sample", "Wishlist"] else 0
+                        _STATUS_LIST = ["", "Bottle", "Decant", "Sample", "Tested"]
+                        _cur_status = str(row.get('status', '') or '')
+                        e_status = st.selectbox(
+                            "Status",
+                            _STATUS_LIST,
+                            format_func=lambda x: x or "— Nessuno —",
+                            index=_STATUS_LIST.index(_cur_status)
+                            if _cur_status in _STATUS_LIST else 0
+                        )
+                        e_watchlist = st.checkbox(
+                            "Watchlist",
+                            value=bool(row.get('watchlist', False))
                         )
                         e_bottle = st.checkbox(
-                            "Bottle candidate",
+                            "Bottle candidate (N/A se Status = Bottle)",
                             value=bool(row.get('bottle_candidate'))
                         )
                         col_save, col_cancel = st.columns(2)
@@ -153,7 +177,8 @@ with tab_lista:
                         if save_edit:
                             df_ratings.at[idx, 'rating'] = e_rating
                             df_ratings.at[idx, 'comment'] = e_comment
-                            df_ratings.at[idx, 'ownership'] = e_ownership
+                            df_ratings.at[idx, 'status'] = e_status
+                            df_ratings.at[idx, 'watchlist'] = e_watchlist
                             df_ratings.at[idx, 'bottle_candidate'] = e_bottle
                             save_ratings(df_ratings)
                             st.session_state[f"editing_{idx}"] = False
@@ -206,7 +231,7 @@ with tab_match:
                 else:
                     # seleziona a quale profumo della tua lista abbinare
                     my_options = df_ratings.apply(
-                        lambda r: f"{r['brand']} — {r['name']} {r.get('form', '')} ({r.get('ownership', '')})",
+                        lambda r: f"{r['brand']} — {r['name']} {r.get('form', '')} ({str(r.get('status', '') or '—')})",
                         axis=1
                     ).tolist()
                     target = st.selectbox("Abbina a quale tuo profumo?",
@@ -333,18 +358,18 @@ with tab_profilo:
         # ── Statistiche — full width ──────────────────────────────────────────
         st.subheader("Statistiche")
 
-        total        = len(df_ratings)
-        avg_rating   = df_ratings['rating'].mean()
-        best_row     = df_ratings.loc[df_ratings['rating'].idxmax()]
-        full_bottles = len(df_ratings[df_ratings['ownership'] == 'Full Bottle'])
-        decants      = len(df_ratings[df_ratings['ownership'] == 'Decant'])
-        bottle_candidates = len(df_ratings[df_ratings['bottle_candidate'] == True])
+        _status_s     = df_ratings.get('status', pd.Series('', index=df_ratings.index)).fillna('')
+        total         = len(df_ratings)
+        avg_rating    = df_ratings['rating'].mean()
+        bottles       = int((_status_s == 'Bottle').sum())
+        decants       = int((_status_s == 'Decant').sum())
+        bottle_candidates = int((df_ratings['bottle_candidate'] == True).sum())
         fam_preferita = top_accords[0][0].capitalize() if top_accords else '—'
 
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.metric("Totale",             total)
         c2.metric("Avg rating",         f"{avg_rating:.1f}")
-        c3.metric("Full bottles",       full_bottles)
+        c3.metric("Bottiglie",          bottles)
         c4.metric("Decants",            decants)
         c5.metric("Bottle Candidates",  bottle_candidates)
         c6.metric("Famiglia preferita", fam_preferita)
@@ -412,7 +437,33 @@ with tab_profilo:
 
         # ── Scatter plot — full width ─────────────────────────────────────────
         st.subheader("La tua collezione nello spazio olfattivo")
-        df_scatter = compute_scatter_data(df_ratings)
+
+        _SCATTER_OPTS = {
+            'all':            'Tutti',
+            'tried_or_owned': 'Provati o posseduti (Bottle+Decant+Sample+Tested)',
+            'owned':          'Solo posseduti (Bottle+Decant+Sample)',
+            'bottle_only':    'Solo bottiglie',
+        }
+        scatter_filter = st.selectbox(
+            "Visibilità grafico",
+            options=list(_SCATTER_OPTS.keys()),
+            format_func=lambda x: _SCATTER_OPTS[x],
+            key='scatter_filter',
+        )
+
+        _sf_status = df_ratings.get('status', pd.Series('', index=df_ratings.index)).fillna('')
+        if scatter_filter == 'tried_or_owned':
+            _sf_mask = _sf_status.isin(['Bottle', 'Decant', 'Sample', 'Tested'])
+            df_for_scatter = df_ratings[_sf_mask]
+        elif scatter_filter == 'owned':
+            _sf_mask = _sf_status.isin(['Bottle', 'Decant', 'Sample'])
+            df_for_scatter = df_ratings[_sf_mask]
+        elif scatter_filter == 'bottle_only':
+            df_for_scatter = df_ratings[_sf_status == 'Bottle']
+        else:
+            df_for_scatter = df_ratings
+
+        df_scatter = compute_scatter_data(df_for_scatter)
 
         if df_scatter.empty:
             st.caption("Abbina qualche profumo per vedere il grafico.")
@@ -528,51 +579,60 @@ with tab_raccomanda:
         if st.button("✨ Genera raccomandazioni", type="primary"):
             with st.spinner("Calcolo in corso…"):
                 if mode == 'profilo':
-                    df_recs = get_recommendations(
-                    df_ratings, df_dataset, n=n_recs,
-                    exclude_known=exclude_known,
-                    gender_filter=gender_val,
-                    quality_pct=quality_pct
-                )
+                    _df_recs = get_recommendations(
+                        df_ratings, df_dataset, n=n_recs,
+                        exclude_known=exclude_known,
+                        gender_filter=gender_val,
+                        quality_pct=quality_pct
+                    )
                 else:
-                    df_recs = get_similar_to(
+                    _df_recs = get_similar_to(
                         ref_brand, ref_name,
                         df_ratings, df_dataset, n=n_recs,
                         quality_pct=quality_pct
                     )
+            st.session_state['last_recs'] = _df_recs
+            # clear stale explanations when recs are regenerated
+            for k in list(st.session_state.keys()):
+                if k.startswith('expl_rec_'):
+                    del st.session_state[k]
 
-            if df_recs.empty:
-                st.warning("Nessuna raccomandazione trovata.")
-            else:
-                for _, rec in df_recs.iterrows():
-                    with st.expander(
-                        f"**{rec['brand']} — {rec['name']}** "
-                        f"(similarità: {rec['similarity']:.2f})"
-                    ):
-                        col1, col2 = st.columns([2, 1])
-                        with col1:
-                            if pd.notna(rec.get('top')):
-                                st.caption(f"Top: {rec['top']}")
-                            if pd.notna(rec.get('middle')):
-                                st.caption(f"Middle: {rec['middle']}")
-                            if pd.notna(rec.get('base')):
-                                st.caption(f"Base: {rec['base']}")
-                        with col2:
-                            if pd.notna(rec.get('accord1')):
-                                st.caption(f"Accord: {rec['accord1']}")
-                            if pd.notna(rec.get('accord2')):
-                                st.caption(f"{rec['accord2']}")
-                            st.caption(f"Genere: {rec.get('gender', '—')}")
+        df_recs = st.session_state.get('last_recs', pd.DataFrame())
 
-                        if st.button("🤖 Spiega perché", key=f"explain_{rec['brand']}_{rec['name']}"):
-                            with st.spinner("Analisi in corso…"):
-                                try:
-                                    explanation = explain_recommendation(
-                                        rec.to_dict(), df_ratings
-                                    )
-                                    st.markdown(explanation)
-                                except Exception as e:
-                                    st.error(f"Errore: {e}")
+        if not df_recs.empty:
+            for _i, rec in df_recs.iterrows():
+                with st.expander(
+                    f"**{rec['brand']} — {rec['name']}** "
+                    f"(similarità: {rec['similarity']:.2f})"
+                ):
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        if pd.notna(rec.get('top')):
+                            st.caption(f"Top: {rec['top']}")
+                        if pd.notna(rec.get('middle')):
+                            st.caption(f"Middle: {rec['middle']}")
+                        if pd.notna(rec.get('base')):
+                            st.caption(f"Base: {rec['base']}")
+                    with col2:
+                        if pd.notna(rec.get('accord1')):
+                            st.caption(f"Accord: {rec['accord1']}")
+                        if pd.notna(rec.get('accord2')):
+                            st.caption(f"{rec['accord2']}")
+                        st.caption(f"Genere: {rec.get('gender', '—')}")
+
+                    _expl_key = f"expl_rec_{_i}_{rec['brand']}_{rec['name']}"
+                    if st.button("🤖 Spiega perché", key=f"explain_{_i}_{rec['brand']}_{rec['name']}"):
+                        with st.spinner("Analisi in corso…"):
+                            try:
+                                _expl = explain_recommendation(rec.to_dict(), df_ratings)
+                                st.session_state[_expl_key] = _expl
+                            except Exception as e:
+                                st.session_state[_expl_key] = f"⚠️ Errore LLM: {e}"
+                        st.rerun()
+                    if _expl_key in st.session_state:
+                        st.markdown(st.session_state[_expl_key])
+        elif 'last_recs' in st.session_state:
+            st.warning("Nessuna raccomandazione trovata.")
 
 with tab_esplora:
     st.header("Esplora stili")
@@ -651,6 +711,25 @@ with tab_esplora:
 with tab_aggiungi:
     st.header("Aggiungi fragranza")
 
+    # ── Bug fix: duplicate dialog lives OUTSIDE the form so buttons work ──────
+    if 'pending_duplicate' in st.session_state:
+        _pd = st.session_state['pending_duplicate']
+        st.warning(
+            f"⚠️ **{_pd['brand']} — {_pd['name']}** è già nella tua lista. "
+            "Vuoi aggiungerlo comunque (es. versione diversa o formato diverso)?"
+        )
+        _dc1, _dc2 = st.columns(2)
+        with _dc1:
+            if st.button("✅ Aggiungi comunque", key="force_add_btn", type="primary"):
+                add_rating(**{k: v for k, v in _pd.items() if k != '_label'})
+                st.success(f"✓ {_pd['brand']} {_pd['name']} aggiunto con rating {_pd['rating']}!")
+                st.session_state.pop('pending_duplicate', None)
+                st.rerun()
+        with _dc2:
+            if st.button("❌ Annulla", key="cancel_add_btn"):
+                st.session_state.pop('pending_duplicate', None)
+                st.rerun()
+
     with st.form("add_fragrance"):
         col1, col2 = st.columns(2)
         with col1:
@@ -658,8 +737,17 @@ with tab_aggiungi:
             new_name = st.text_input("Nome *")
             new_form = st.selectbox("Formato", ["EdP", "EdT", "Extrait", "Parfum", "EdC", ""])
         with col2:
-            new_ownership = st.selectbox("Possesso",
-                ["Decant", "Full Bottle", "Sample", "Wishlist"])
+            new_status = st.selectbox(
+                "Status",
+                ["", "Bottle", "Decant", "Sample", "Tested"],
+                format_func=lambda x: x or "— Nessuno —",
+                help="Bottle=possiedi la bottiglia · Decant/Sample=formato ridotto · Tested=provato non posseduto"
+            )
+            new_watchlist = st.checkbox("Watchlist", help="Segnalibro, disponibile con qualsiasi status")
+            new_bottle = st.checkbox(
+                "Bottle candidate",
+                help="Ignorato se Status = Bottle (già posseduto)"
+            )
             new_rating = st.select_slider(
                 "Rating *",
                 options=[r/10 for r in range(
@@ -668,7 +756,6 @@ with tab_aggiungi:
                     int(RATING_STEP*10)
                 )]
             )
-            new_bottle = st.checkbox("Bottle candidate")
 
         new_comment = st.text_area("Commento", placeholder="Note personali, impressioni, occasioni d'uso…")
 
@@ -677,25 +764,29 @@ with tab_aggiungi:
         if submitted:
             if not new_brand or not new_name:
                 st.error("Brand e nome sono obbligatori.")
-            elif check_duplicate(new_brand, new_name) and not st.session_state.get('force_add'):
-                st.warning(
-                    f"⚠️ **{new_brand} — {new_name}** è già nella tua lista. "
-                    "Vuoi aggiungerlo comunque (es. versione diversa)?"
-                )
-                if st.button("✅ Aggiungi comunque", key="force_add_btn"):
-                    st.session_state['force_add'] = True
-                    st.rerun()
+            elif check_duplicate(new_brand, new_name):
+                st.session_state['pending_duplicate'] = {
+                    'brand':            new_brand,
+                    'name':             new_name,
+                    'form':             new_form,
+                    'status':           new_status,
+                    'watchlist':        new_watchlist,
+                    'rating':           new_rating,
+                    'comment':          new_comment,
+                    'bottle_candidate': new_bottle,
+                }
+                st.rerun()
             else:
                 add_rating(
                     brand=new_brand,
                     name=new_name,
                     form=new_form,
-                    ownership=new_ownership,
+                    status=new_status,
+                    watchlist=new_watchlist,
                     rating=new_rating,
                     comment=new_comment,
-                    bottle_candidate=new_bottle
+                    bottle_candidate=new_bottle,
                 )
-                st.session_state.pop('force_add', None)
                 st.success(f"✓ {new_brand} {new_name} aggiunto con rating {new_rating}!")
 
 
