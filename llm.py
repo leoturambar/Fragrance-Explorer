@@ -4,7 +4,7 @@ from recommender import build_personal_profile
 
 LLM_BACKEND = "ollama"  # "claude" oppure "ollama"
 
-OLLAMA_MODEL  = "qwen2.5:14b"
+OLLAMA_MODEL  = "qwen3.5:9b" #"qwen2.5:14b"
 OLLAMA_BASE_URL = "http://localhost:11434/v1"
 CLAUDE_MODEL  = "claude-haiku-4-5-20251001"
 
@@ -15,10 +15,10 @@ def get_client():
         return anthropic.Anthropic()
     else:
         from openai import OpenAI
-        return OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+        return OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")  # non usato ma lascialo
 
 
-def call_llm(prompt: str, max_tokens: int = 500) -> str:
+def call_llm(prompt: str, max_tokens: int = 8192) -> str:
     if LLM_BACKEND == "claude":
         client = get_client()
         msg = client.messages.create(
@@ -28,13 +28,14 @@ def call_llm(prompt: str, max_tokens: int = 500) -> str:
         )
         return msg.content[0].text
     else:
-        client = get_client()
-        resp = client.chat.completions.create(
+        from ollama import Client
+        client = Client(host="http://localhost:11434")
+        resp = client.chat(
             model=OLLAMA_MODEL,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
+            think=False
         )
-        return resp.choices[0].message.content
+        return resp.message.content
 
 
 def explain_recommendation(candidate: dict, df_ratings: pd.DataFrame,
@@ -72,7 +73,7 @@ In 3-4 sentences, explain specifically why this fragrance might appeal to this u
 Reference their actual favorite fragrances by name. Be specific about which notes create the connection.
 Do not use generic phrases like "you might enjoy this". Be precise and direct."""
 
-    return call_llm(prompt, max_tokens=300)
+    return call_llm(prompt, max_tokens=8192)
 
 
 def explain_profile(df_ratings: pd.DataFrame) -> str:
@@ -106,7 +107,7 @@ LOW-RATED fragrances (disliked or indifferent):
 Write a 150-200 word profile. Be specific, reference actual fragrances and notes.
 End with one sentence suggesting what unexplored territory might suit them."""
 
-    return call_llm(prompt, max_tokens=400)
+    return call_llm(prompt, max_tokens=8192)
 
 
 def explain_exploration(style: str, df_ratings: pd.DataFrame,
@@ -139,4 +140,4 @@ In 3-4 sentences, explain why these specific fragrances are good entry points in
 for someone with this taste profile. Mention the bridges between what they already love
 and the new style. Be specific."""
 
-    return call_llm(prompt, max_tokens=300)
+    return call_llm(prompt, max_tokens=8192)

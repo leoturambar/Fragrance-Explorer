@@ -7,3 +7,4 @@ plotly>=5.0.0
 rapidfuzz>=3.0.0
 openai>=1.0.0
 ddgs>=9.0.0
+ollama>=0.6.1
