@@ -5,6 +5,15 @@ from sklearn.metrics.pairwise import cosine_similarity
 from matcher import load_dataset, get_candidates
 
 
+# Ratings at or below this only feed the avoid vector (never the positive profile)
+AVOID_MAX_RATING = 5.5
+
+# How strongly "Favorisci la nicchia" down-weights popular fragrances (0-1)
+NICHE_STRENGTH = 0.5
+# Vote count at which a niche fragrance's rating is considered fully reliable
+NICHE_FULL_CONFIDENCE_VOTES = 100
+
+
 def build_note_string(row) -> str:
     """
     Combina top, middle, base notes e main accords in una stringa unica.
@@ -44,7 +53,11 @@ def build_personal_profile(df_ratings: pd.DataFrame) -> dict:
     Restituisce dict con:
         - note_string: stringa pesata di note preferite
         - top_notes: note più amate (rating >= 8)
-        - avoid_notes: note associate a rating bassi (<= 5.5)
+        - avoid_notes: note associate a rating bassi (<= AVOID_MAX_RATING)
+
+    Fragrances rated <= AVOID_MAX_RATING feed ONLY the avoid vector: they no
+    longer add a positive contribution to note_string (previously every
+    entry, even a 3.5, was repeated at least once in the positive profile).
 
     Pesi status:
         Bottle → 1.5x | Decant/Sample/Tested + BC → 1.2x
@@ -62,14 +75,17 @@ def build_personal_profile(df_ratings: pd.DataFrame) -> dict:
     if df.empty:
         return {'note_string': '', 'top_notes': '', 'avoid_notes': ''}
 
-    # normalizza rating a 0-1, poi moltiplica per moltiplicatore status
-    r_min, r_max = df['rating'].min(), df['rating'].max()
-    df['_rating_w']     = (df['rating'] - r_min) / (r_max - r_min + 0.001)
-    df['_status_mult']  = df.apply(_status_weight, axis=1)
-    df['weight']        = df['_rating_w'] * df['_status_mult']
+    # positive profile: only fragrances above the avoid threshold.
+    # Rating normalized to 0-1 between the threshold and the best rating,
+    # then multiplied by the status multiplier.
+    df_pos = df[df['rating'] > AVOID_MAX_RATING].copy()
+    r_max = df_pos['rating'].max() if not df_pos.empty else AVOID_MAX_RATING + 1
+    df_pos['_rating_w']    = (df_pos['rating'] - AVOID_MAX_RATING) / (r_max - AVOID_MAX_RATING)
+    df_pos['_status_mult'] = df_pos.apply(_status_weight, axis=1) if not df_pos.empty else 1.0
+    df_pos['weight']       = df_pos['_rating_w'] * df_pos['_status_mult']
 
     weighted_parts = []
-    for _, row in df.iterrows():
+    for _, row in df_pos.iterrows():
         note_str = build_note_string(row)
         if not note_str.strip():
             continue
@@ -79,7 +95,7 @@ def build_personal_profile(df_ratings: pd.DataFrame) -> dict:
     df_top = df[df['rating'] >= 8.0]
     top_notes = ' '.join(build_note_string(r) for _, r in df_top.iterrows())
 
-    df_avoid = df[df['rating'] <= 5.5]
+    df_avoid = df[df['rating'] <= AVOID_MAX_RATING]
     avoid_notes = ' '.join(build_note_string(r) for _, r in df_avoid.iterrows())
 
     return {
@@ -138,7 +154,7 @@ def prepare_dataset(df_dataset: pd.DataFrame) -> pd.DataFrame:
     Adds 'quality_score' and 'note_string' to the dataset. Expensive (~70k rows),
     so callers should cache the result; already-prepared frames pass through.
     """
-    if 'quality_score' in df_dataset.columns and 'note_string' in df_dataset.columns:
+    if {'quality_score', 'note_string', 'popularity'} <= set(df_dataset.columns):
         return df_dataset.copy()
     df_ds = df_dataset.copy()
 
@@ -149,6 +165,24 @@ def prepare_dataset(df_dataset: pd.DataFrame) -> pd.DataFrame:
     )
     max_q = df_ds['quality_score'].max() or 1
     df_ds['quality_score'] = df_ds['quality_score'] / max_q
+
+    # popularity (0-1, log of vote count) and a rating-only quality for niche mode
+    votes = pd.to_numeric(df_ds['Rating Count'].astype(str).str.replace(',', ''),
+                          errors='coerce').fillna(0)
+    rating = pd.to_numeric(df_ds['Rating Value'], errors='coerce').fillna(0)
+    log_votes = np.log1p(votes)
+    df_ds['popularity'] = log_votes / (log_votes.max() or 1)
+    confidence = (log_votes / np.log1p(NICHE_FULL_CONFIDENCE_VOTES)).clip(upper=1)
+    # rating stretched over the useful 3-5 range, so the quality slider bites
+    own = ((rating - 3) / 2).clip(0, 1) * confidence
+    # brand reputation = average rating of its fragrances (no vote-count bias),
+    # only for brands with at least 3 rated fragrances
+    brand = df_ds['Brand'].str.lower().str.strip()
+    rated = rating.where(votes > 0)
+    b_mean = rated.groupby(brand).transform('mean')
+    b_n = rated.groupby(brand).transform('count')
+    brand_q = ((b_mean - 3.5) / 1.0).clip(0, 1).where(b_n >= 3, 0.3).fillna(0.3)
+    df_ds['niche_quality'] = 0.65 * own + 0.35 * brand_q
 
     # costruisce stringa note
     df_ds['note_string'] = df_ds.apply(
@@ -188,6 +222,31 @@ def _exclude_known(df_ds: pd.DataFrame, df_ratings: pd.DataFrame,
     return df_ds[~df_ds.index.isin(known_idx)]
 
 
+def _apply_quality(df_ds: pd.DataFrame, quality_pct: int, niche: bool = False) -> pd.DataFrame:
+    """
+    Quality filter + multiplier on 'similarity'.
+
+    Default: quality_score = rating × log(votes) blended with brand reputation,
+    which favours very popular fragrances.
+    niche=True: quality is the rating itself, discounted only when there are
+    too few votes to trust it (< NICHE_FULL_CONFIDENCE_VOTES); then similarity
+    is reduced by up to NICHE_STRENGTH for the most-voted fragrances.
+    """
+    quality_weight = 1 - (quality_pct / 100)
+    q = df_ds['niche_quality'] if niche else df_ds['quality_score']
+    min_threshold = quality_weight * 0.5
+    df_ds = df_ds[q >= min_threshold].copy()
+    q = q.loc[df_ds.index]
+
+    penalty = q ** (1 + quality_weight * 2)
+    df_ds['similarity'] = df_ds['similarity'] * (
+        (1 - quality_weight) + quality_weight * penalty
+    )
+    if niche:
+        df_ds['similarity'] = df_ds['similarity'] * (1 - NICHE_STRENGTH * df_ds['popularity'])
+    return df_ds
+
+
 def _top_n(df_ds: pd.DataFrame, n: int) -> pd.DataFrame:
     """De-duplicates *before* cutting to n, so n results are always returned."""
     df_ds = df_ds.sort_values('similarity', ascending=False) \
@@ -208,7 +267,8 @@ def get_recommendations(df_ratings: pd.DataFrame,
                         exclude_known: bool = True,
                         gender_filter='all',
                         quality_pct: int = 40,
-                        known_idx: set | None = None) -> pd.DataFrame:
+                        known_idx: set | None = None,
+                        niche: bool = False) -> pd.DataFrame:
     """
     Genera raccomandazioni dal dataset Kaggle basate sul profilo personale.
     df_dataset may be raw or already passed through prepare_dataset().
@@ -251,14 +311,7 @@ def get_recommendations(df_ratings: pd.DataFrame,
         df_ds['similarity'] = df_ds['similarity'] - (avoid_sim * 0.3)
 
     # filtro qualità e moltiplicatore
-    quality_weight = 1 - (quality_pct / 100)
-    min_threshold = quality_weight * 0.5
-    df_ds = df_ds[df_ds['quality_score'] >= min_threshold]
-
-    penalty = df_ds['quality_score'] ** (1 + quality_weight * 2)
-    df_ds['similarity'] = df_ds['similarity'] * (
-        (1 - quality_weight) + quality_weight * penalty
-    )
+    df_ds = _apply_quality(df_ds, quality_pct, niche)
 
     return _top_n(df_ds, n)
 
@@ -269,7 +322,8 @@ def get_similar_to(rid: str,
                    n: int = 8,
                    quality_pct: int = 40,
                    gender_filter='all',
-                   known_idx: set | None = None) -> pd.DataFrame:
+                   known_idx: set | None = None,
+                   niche: bool = False) -> pd.DataFrame:
     """
     Trova profumi simili a una voce specifica della lista (by stable id).
     Excludes every fragrance already in the list, not just the reference.
@@ -295,7 +349,7 @@ def get_similar_to(rid: str,
     return get_recommendations(
         temp_profile_df, df_dataset, n=n, exclude_known=True,
         gender_filter=gender_filter, quality_pct=quality_pct,
-        known_idx=known_idx,
+        known_idx=known_idx, niche=niche,
     )
 
 
@@ -306,7 +360,8 @@ def get_exploration_recommendations(df_ratings: pd.DataFrame,
                                      n: int = 10,
                                      gender_filter='all',
                                      quality_pct: int = 40,
-                                     known_idx: set | None = None) -> pd.DataFrame:
+                                     known_idx: set | None = None,
+                                     niche: bool = False) -> pd.DataFrame:
 
     profile = build_personal_profile(df_ratings)
     query = explore_style
@@ -348,14 +403,7 @@ def get_exploration_recommendations(df_ratings: pd.DataFrame,
         df_ds['profile_sim'] = profile_sim
 
     # filtro qualità e moltiplicatore
-    quality_weight = 1 - (quality_pct / 100)
-    min_threshold = quality_weight * 0.5
-    df_ds = df_ds[df_ds['quality_score'] >= min_threshold]
-
-    penalty = df_ds['quality_score'] ** (1 + quality_weight * 2)
-    df_ds['similarity'] = df_ds['similarity'] * (
-        (1 - quality_weight) + quality_weight * penalty
-    )
+    df_ds = _apply_quality(df_ds, quality_pct, niche)
 
     # intensity — usa la colonna salvata prima del filtro
     if intensity < 1.0 and profile['note_string'] and 'profile_sim' in df_ds.columns:

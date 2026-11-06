@@ -58,6 +58,9 @@ adds missing columns/ids, and fixes legacy "(Decant)" values stored in 'form'.
   without explicit instruction
 - Personal profile (build_personal_profile) uses a combined weight:
     normalized_rating × status_multiplier
+  Only ratings > AVOID_MAX_RATING (5.5) enter the positive profile; rating is
+  normalized between 5.5 and the best rating. Ratings ≤ 5.5 feed only the
+  avoid vector (approved Nov 2026).
   Status multipliers (_status_weight in recommender.py):
     Bottle                          → 1.5×
     Decant/Sample/Tested + BC=True  → 1.2×
@@ -65,6 +68,11 @@ adds missing columns/ids, and fixes legacy "(Decant)" values stored in 'form'.
     No status + watchlist only      → 0.0 (excluded from profile)
 - Avoid penalty: fragrances rated ≤ 5.5 generate an avoid vector; cosine
   similarity to that vector is subtracted at 0.3× from every candidate score
+- Quality (recommender._apply_quality): default quality_score = rating ×
+  log(votes) + brand reputation (favours popular). Niche mode ("Favorisci la
+  nicchia", approved Nov 2026): niche_quality = 0.65 × rating stretched over
+  3–5 × vote confidence (full at 100 votes) + 0.35 × brand average rating;
+  similarity then × (1 − 0.5 × popularity).
 - Exclusion: matcher.known_dataset_indices() = resolved dataset_idx + fuzzy
   brand (prefix/word) and cleaned-name match (token_sort ≥ 95, brand,
   concentration, edition and year words stripped). Flankers stay recommendable.
