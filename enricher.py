@@ -22,7 +22,7 @@ def search_fragrantica_url(brand: str, name: str) -> str | None:
             results = list(ddgs.text(query, max_results=5))
         print(f"  Risultati trovati: {len(results)}")
         for r in results:
-            print(f"    → {r.get('href', 'no href')}")
+            print(f"    -> {r.get('href', 'no href')}")
             url = r.get('href', '')
             if 'fragrantica.com/perfume/' in url:
                 return url

@@ -53,33 +53,35 @@ Instead of the personal profile as the query, exploration mode uses a fixed voca
 
 The app has four tabs.
 
-**La mia lista** is your personal catalogue. A graph visibility filter at the top — Tutti / Provati o posseduti / Solo posseduti / Solo bottiglie — is stored in session state and shared with the Profilo scatter plot. The list can be filtered by minimum rating, status (Bottle / Decant / Sample / Tested / Watchlist / no status), and bottle candidate flag, then sorted by rating or brand. Each entry expands to show olfactory notes, status, Watchlist flag, and personal comments. The inline edit form covers rating, comment, status, Watchlist, and Bottle Candidate. Delete requires a two-step confirmation.
+**La mia lista** is your personal catalogue. A search box looks through brand, name, notes and comments; filters cover a rating range, status (Bottle / Decant / Sample / Tested / Watchlist / no status), bottle candidates and entries without a note pyramid; sorting by rating, brand or date added. Two views: *Schede* (expandable cards showing notes, where they came from — dataset match or Fragrantica — and an inline edit form for every field including brand, name and format) and *Tabella* (an editable grid for bulk changes, saved with one click). Delete requires a two-step confirmation. Every entry has a stable id, so deleting or reordering never disturbs other entries.
 
 The ownership model has three independent fields. **Status** (Bottle / Decant / Sample / Tested) is mutually exclusive and tracks how you possess or have tried the fragrance. **Bottle Candidate** is a boolean that flags fragrances you're considering buying; it's hidden when status is already Bottle. **Watchlist** is a freestanding bookmark, available at any status level including none — useful for tracking fragrances you want to try without claiming you've tried them.
 
 <!-- SCREENSHOT: La mia lista tab with an entry expanded -->
 
-**Profilo** visualizes your taste. Six summary metrics span the top: total fragrances, average rating, bottle count, decant count, bottle candidates, and dominant olfactory family. Below them, a Plotly horizontal bar chart shows rating distribution. Beside it, a radar chart maps your top 8 olfactory families, weighted by rating — accord keywords are matched against each fragrance's combined note string, and the score is a sum of rating-normalized weights, normalized to a 0–1 scale. The scatter plot of your collection uses the graph visibility filter set in La mia lista. An LLM narrative profile (button at the bottom) asks Claude to read your top-rated and low-rated fragrances and write a 150–200 word assessment.
+**Profilo** visualizes your taste, using only fragrances you have actually tried (watchlist-only bookmarks are excluded). Summary metrics span the top. A rating-distribution bar chart is colored by liked / neutral / disliked. The radar compares olfactory families among liked (≥ 7.5) and disliked (≤ 6) fragrances, matching families as whole words so 'rose' doesn't count 'rosewood'. The scatter plot (freshness × depth, sized by intensity, colored by rating relative to your own range, shaped by status) has its own visibility filter, optional name labels, and click-to-inspect. An LLM narrative profile (button at the bottom) writes a 150–200 word assessment.
 
-Two placeholder expanders mark future sections: **Deriva temporale** (taste drift over time) and **Gap analysis** (unexplored olfactory families).
+**Gap analysis** compares how common each family is in your list vs the whole dataset, highlighting under-explored territory. **Deriva temporale** plots ratings over time; it needs the `date_added` field, which is recorded for every fragrance added from now on.
 
 <!-- SCREENSHOT: Profilo tab showing stats, radar chart, and scatter plot -->
 
-**Scopri** merges the two discovery modes behind a radio toggle.
+**Scopri** has three modes behind one toggle — *Dal mio profilo*, *Simile a…*, *Esplora uno stile* — sharing the count, gender (Maschile + Unisex by default, matching the dataset's "for men" / "for women" / "for women and men" labels) and quality controls. Fragrances already in your list are excluded via confirmed matches plus fuzzy brand+name matching that tolerates spelling differences ("Memo" vs "Memo Paris", catalogue numbers like "02 L'Air du Desert Marocain"). Any result can be bookmarked to the watchlist with one click, notes included.
 
-*Basato sul tuo profilo* is the main recommendation engine. Two sub-modes: profile-based (uses the full personal vector) and "similar to a specific fragrance" (builds a temporary single-fragrance profile with weight 1.0). Controls include recommendation count, gender filter, an option to exclude already-known fragrances, and the quality slider. Each result shows notes and accords in an expander. Clicking "Spiega perché" fires the LLM with the candidate's full note data, your top-rated fragrances, and your profile's top note cluster — asking it to explain the connection by referencing your actual favorites. Recommendations and individual explanations are stored in session state so they survive any UI interaction without recomputing.
+*Dal mio profilo* uses the full personal vector; *Simile a…* builds a single-fragrance profile from one entry of your list. Clicking "Spiega perché" asks the LLM to explain the connection by referencing your actual favorites. Results and explanations are kept in session state so they survive any interaction.
 
-*Esplora uno stile* is for venturing outside your comfort zone. Pick one of 25 named styles, set the intensity slider (0 = close to your profile, 1 = maximum style departure), apply gender and quality filters, and the engine returns fragrances matching the style vocabulary while respecting your avoid list. An LLM explanation runs automatically on each result set.
+*Esplora uno stile* is for venturing outside your comfort zone. Pick one of 25 named styles and set the intensity slider (0 = close to your profile, 1 = maximum style departure). The LLM explanation runs only when you ask for it, so changing other widgets never re-triggers it.
 
 <!-- SCREENSHOT: Scopri tab with recommendations expanded -->
 
-**Gestione** consolidates three data-management tools in inner tabs.
+**Gestione** consolidates the data-management tools in inner tabs.
 
-*Aggiungi* is the manual entry form: brand, name, format (EdP/EdT/Extrait/Parfum/EdC), status, Watchlist checkbox, Bottle Candidate checkbox, rating on a 1.0–10.0 half-step slider, and a comment field. Duplicate detection runs on submit — if brand and name already exist, a confirmation dialog appears outside the form (so its buttons survive Streamlit's rerun cycle) with an option to force-add anyway, useful for multiple formats of the same fragrance.
+*Aggiungi* is the manual entry form: brand, name, format, status, Watchlist, Bottle Candidate, rating (or "not tried yet" for a pure bookmark) and comment. Duplicate detection considers brand, name and format. Right after adding, the best dataset candidates are offered so you can attach notes in one click.
 
-*Abbina note* links your personal fragrances to the dataset so they can participate in the recommendation engine. A two-stage fuzzy match (rapidfuzz `fuzz.ratio` on brand, then `fuzz.token_sort_ratio` on name) surfaces up to 15 candidates per fragrance, each showing the full note pyramid and accords. If automatic candidates miss, a manual dataset search by name or brand is available. Confirmed matches are stored in `data/confirmed_matches.csv` with brand and name as the stable lookup key (not just an integer index) and back-propagated to the ratings CSV. The sub-tab shows running stats — total, confirmed, skipped, pending.
+*Abbina note* links your fragrances to the dataset. You pick one entry at a time and get up to 10 fuzzy candidates (brand prefix/word matching, name compared after stripping brand, concentration and edition words), each with its pyramid and accords. The match is stored on the entry itself as `ds_brand` / `ds_name` (never as a row position). If the dataset row has only accords, existing notes (e.g. from Fragrantica) are kept. A manual dataset search is also available.
 
-*Arricchisci note* handles fragrances that didn't match in the dataset or matched but had no pyramid data. A DuckDuckGo search finds the Fragrantica URL; the page is scraped with BeautifulSoup, parsing `pyramid-note-label` spans and the `rounded-br-lg` accord container. If the auto-found URL is wrong, you can edit it in place and re-scrape. Confirmed notes write to the ratings CSV with a `notes_source: web_enriched` marker.
+*Arricchisci note* completes entries without a note pyramid: a DuckDuckGo + Fragrantica lookup (Fragrantica often answers 403 to automated requests) and a manual form to paste or correct top / heart / base notes and accords.
+
+*Salute dati* runs automatic checks — matches whose name doesn't resemble the entry, references missing from the dataset, stored notes that differ from the matched row, entries without notes — and offers a CSV backup download.
 
 ---
 
@@ -93,7 +95,7 @@ Neither CSV is included in the repository. The clean dataset corresponds to a Fr
 
 ## LLM backend
 
-The LLM layer is dual-backend, toggled by `LLM_BACKEND` in [llm.py](llm.py). Set to `"claude"`, it calls `claude-haiku-4-5-20251001` via the Anthropic API. Set to `"ollama"`, it hits `http://localhost:11434/v1` with `qwen2.5:14b` using the OpenAI-compatible endpoint. Either way, the three prompt functions — `explain_recommendation`, `explain_profile`, `explain_exploration` — pass the same structured context: rated fragrance names, ratings, comments, and extracted profile data.
+The LLM layer is dual-backend, toggled by `LLM_BACKEND` in [llm.py](llm.py). Set to `"claude"`, it calls the model in `CLAUDE_MODEL` via the Anthropic API. Set to `"ollama"`, it calls a local Ollama server (`OLLAMA_MODEL`, currently `qwen3.5:9b`). Either way, the three prompt functions — `explain_recommendation`, `explain_profile`, `explain_exploration` — pass the same structured context: rated fragrance names, ratings, comments, and extracted profile data.
 
 ---
 
@@ -151,11 +153,11 @@ Items that have shipped:
 - [x] Enrich notes tab — web lookup for fragrances missing from the dataset
 - [x] Delete entry from personal list with confirmation
 - [x] Status/Watchlist ownership model with per-status profile weights
-- [x] Graph visibility filter shared across La mia lista and Profilo
+- [x] Data integrity overhaul — stable ids, matches stored on each entry, health checks, gender filter and known-fragrance exclusion fixed
 - [x] Consolidated 4-tab layout (was 7)
-- [x] Stable dataset matching — confirmed matches stored by brand+name, not integer index
+- [x] Gap analysis, liked-vs-disliked radar, editable table view, search, watchlist from recommendations
 
-What might come next: Deriva temporale (taste drift over time), Gap analysis (unexplored olfactory families), export of the personal profile as a shareable JSON.
+What might come next: Deriva temporale with enough dated entries, export of the personal profile as a shareable JSON.
 
 ---
 
