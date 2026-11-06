@@ -61,11 +61,14 @@ EXPLORATION_STYLES = {
 }
 
 # Generi per filtro raccomandazioni
+# Values are sets of normalized genders (see matcher.normalize_gender)
 GENDER_OPTIONS = {
-    'All':    'all',
-    'Male':   'male',
-    'Female': 'female',
-    'Unisex': 'unisex',
+    'Tutti':             'all',
+    'Maschile + Unisex': ('male', 'unisex'),
+    'Maschile':          ('male',),
+    'Unisex':            ('unisex',),
+    'Femminile':         ('female',),
+    'Femminile + Unisex': ('female', 'unisex'),
 }
 
 # Rating scale

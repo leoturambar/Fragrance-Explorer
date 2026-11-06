@@ -7,7 +7,7 @@ from user ratings, and uses Claude to explain recommendations in natural
 language.
 
 ## Stack
-Python · Streamlit · scikit-learn · Pandas · Anthropic API (claude-sonnet)
+Python · Streamlit · scikit-learn · Pandas · Anthropic API or local Ollama (see llm.py)
 
 ## Project structure
 - app.py — Streamlit UI, all tab layout and interaction logic
@@ -24,9 +24,10 @@ Python · Streamlit · scikit-learn · Pandas · Anthropic API (claude-sonnet)
 
 ## Tab structure (4 tabs)
 1. La mia lista — personal catalogue, filters, inline edit/delete
-2. Profilo — stats, radar, scatter plot, LLM narrative, two coming-soon stubs
-3. Scopri — radio toggle between Raccomandazioni and Esplora stili
-4. Gestione — three inner st.tabs(): Aggiungi · Abbina note · Arricchisci note
+2. Profilo — stats, liked-vs-disliked radar, scatter (own filter), gap analysis,
+   time drift (needs date_added), LLM narrative. Uses tried() entries only.
+3. Scopri — segmented control: Dal mio profilo · Simile a… · Esplora uno stile
+4. Gestione — inner st.tabs(): Aggiungi · Abbina note · Arricchisci note · Salute dati
 
 ## Ownership model (ratings.py / app.py)
 Three independent fields per entry:
@@ -34,8 +35,23 @@ Three independent fields per entry:
 - bottle_candidate: bool — hidden/N/A in UI when status = Bottle
 - watchlist: bool — freestanding bookmark, orthogonal to status
 
+Watchlist-only entries (status '' + watchlist) may have rating = NaN ("not
+tried yet"). ratings.tried(df) filters them out — use it for stats, charts,
+profile and LLM context.
+
+## Data schema (data/my_ratings.csv — single source of truth)
+- id: stable 8-char hex, generated on load if missing. ALWAYS address entries
+  by id (never by row position — positions shift on delete).
+- date_added: ISO date for entries added since Nov 2026, '' for legacy.
+- Notes: top_notes, middle_notes, base_notes, main_accords, notes_source
+  ('dataset' | 'web_enriched' | 'manual'), notes_url.
+- Dataset match: match_status ('matched' | 'skipped' | ''), ds_brand, ds_name.
+- Derived on load, never saved: matched (= has any notes),
+  dataset_idx (resolved from ds_brand/ds_name by matcher.resolve_dataset_indices).
+
 Migration: load_ratings() auto-converts old 'ownership' CSVs on first load
-(Full Bottle→Bottle, Decant→Decant, Sample→Sample, Wishlist→watchlist=True).
+(Full Bottle→Bottle, Decant→Decant, Sample→Sample, Wishlist→watchlist=True),
+adds missing columns/ids, and fixes legacy "(Decant)" values stored in 'form'.
 
 ## Key logic
 - Vectorization and similarity are in recommender.py — do not refactor
@@ -49,28 +65,39 @@ Migration: load_ratings() auto-converts old 'ownership' CSVs on first load
     No status + watchlist only      → 0.0 (excluded from profile)
 - Avoid penalty: fragrances rated ≤ 5.5 generate an avoid vector; cosine
   similarity to that vector is subtracted at 0.3× from every candidate score
-- Exclusion in get_recommendations(): two-pass — first by stored dataset_idx,
-  then by brand+name string match — so unmatched personal entries are also
-  excluded when "Escludi profumi già noti" is checked
-- Graph visibility filter stored in st.session_state['scatter_filter'];
-  selectbox lives in La mia lista, Profilo reads from session_state
+- Exclusion: matcher.known_dataset_indices() = resolved dataset_idx + fuzzy
+  brand (prefix/word) and cleaned-name match (token_sort ≥ 95, brand,
+  concentration, edition and year words stripped). Flankers stay recommendable.
+  app.py caches it (get_known_idx) and passes known_idx to the recommenders.
+- Gender filter uses dataset column gender_norm ('male'|'female'|'unisex',
+  from "for men"/"for women"/"for women and men"); GENDER_OPTIONS maps to tuples.
+- prepare_dataset() precomputes quality_score + note_string; app caches it with
+  st.cache_resource. Recommenders accept raw or prepared frames.
+- get_similar_to(rid, …) forces the reference rating to 10 so it never
+  becomes its own avoid vector.
 
-## Confirmed matches (matcher.py)
-confirmed_matches.csv stores (rating_idx, dataset_idx, ds_brand, ds_name).
-enrich_ratings() resolves by normalized (brand, name) key via _make_dataset_lookup(),
-falling back to the integer index only if the string key isn't found.
-This makes matches stable across dataset reloads/reindexing.
-Legacy rows with only dataset_idx still work via the integer fallback path.
+## Dataset matches (matcher.py / ratings.py)
+Matches live on each entry (ds_brand/ds_name). confirmed_matches.csv is gone
+(old positional file kept as data/confirmed_matches.legacy.csv).
+- ratings.apply_match(): takes dataset notes only if the row has a pyramid,
+  otherwise keeps existing (e.g. Fragrantica) notes and stores the reference.
+- Matching one entry never rewrites other entries.
+- matcher.match_health() powers Gestione → Salute dati.
+- Fragrantica returns 403 to automated requests; manual note entry exists.
 
 ## Session state keys (app.py)
-- scatter_filter     — graph visibility selection (shared La mia lista↔Profilo)
-- last_recs          — cached recommendation DataFrame (Scopri tab)
-- last_exp           — cached exploration DataFrame (Scopri tab)
-- expl_rec_{i}_{…}  — per-recommendation LLM explanation text
+- scatter_filter     — scatter visibility selection (Profilo)
+- last_{mode}        — {'df', 'style'} result per Scopri mode (profilo|simile|stile)
+- expl_rec_{mode}_…  — per-recommendation LLM explanation text
+- exp_explanation    — on-demand LLM explanation for Esplora uno stile
 - profile_analysis   — LLM narrative profile text
-- pending_duplicate  — form data awaiting duplicate confirmation in Gestione
-- editing_{idx}      — inline edit form open state (La mia lista)
-- confirm_delete_{…} — delete confirmation state (La mia lista)
+- pending_duplicate  — add_rating kwargs awaiting duplicate confirmation
+- just_added         — id of the entry just added (quick-match box)
+- editing_{id} / confirm_delete_{id} — card edit/delete state (La mia lista)
+- table_editor       — st.data_editor state (La mia lista, Tabella view)
+
+Gotcha: selectbox format_func lambdas must not close over variables that are
+reassigned later in the script (e.g. `pool`) — bind a dict of labels instead.
 
 ## Known fixes (do not re-investigate)
 1. Recommendations including known fragrances — fixed with two-pass exclusion
@@ -81,9 +108,11 @@ Legacy rows with only dataset_idx still work via the integer fallback path.
 3. Duplicate-entry dialog buttons not firing — fixed by moving the confirmation
    dialog outside the st.form block; form data is stashed in
    st.session_state['pending_duplicate'] before st.rerun().
-4. KeyError on dataset index in enrich_ratings() — fixed by storing brand+name
-   alongside the integer index in confirmed_matches.csv and resolving via
-   normalized string lookup instead of df_dataset.loc[integer].
+4. Notes from the wrong fragrance (positional confirmed_matches + reindexed
+   dataset; enrich_ratings() rewrote every entry on each match) — fixed Nov
+   2026 by storing matches per entry by id. Data was repaired; backups in
+   data/*.backup-2026-11-06.csv.
+5. enricher print() with "→" crashed on the Windows cp1252 console.
 
 ## Rules
 - Write all code and docstrings in English

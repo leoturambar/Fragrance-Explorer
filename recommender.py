@@ -133,20 +133,13 @@ def compute_quality_score(row, brand_scores: dict) -> float:
     return 0.7 * score_b + 0.3 * score_c
 
 
-def get_recommendations(df_ratings: pd.DataFrame,
-                        df_dataset: pd.DataFrame,
-                        n: int = 10,
-                        exclude_known: bool = True,
-                        gender_filter: str = 'all',
-                        quality_pct: int = 40) -> pd.DataFrame:
+def prepare_dataset(df_dataset: pd.DataFrame) -> pd.DataFrame:
     """
-    Genera raccomandazioni dal dataset Kaggle basate sul profilo personale.
+    Adds 'quality_score' and 'note_string' to the dataset. Expensive (~70k rows),
+    so callers should cache the result; already-prepared frames pass through.
     """
-    profile = build_personal_profile(df_ratings)
-
-    if not profile['note_string']:
-        return pd.DataFrame()
-
+    if 'quality_score' in df_dataset.columns and 'note_string' in df_dataset.columns:
+        return df_dataset.copy()
     df_ds = df_dataset.copy()
 
     # filtro qualità
@@ -169,27 +162,69 @@ def get_recommendations(df_ratings: pd.DataFrame,
         ])).lower(),
         axis=1
     )
+    return df_ds
+
+
+def _filter_gender(df_ds: pd.DataFrame, gender_filter) -> pd.DataFrame:
+    """gender_filter: 'all' / None, or one/several of 'male' | 'female' | 'unisex'."""
+    if not gender_filter or gender_filter == 'all':
+        return df_ds
+    allowed = {gender_filter} if isinstance(gender_filter, str) else set(gender_filter)
+    if 'gender_norm' in df_ds.columns:
+        return df_ds[df_ds['gender_norm'].isin(allowed)]
+    from matcher import normalize_gender
+    return df_ds[df_ds['Gender'].map(normalize_gender).isin(allowed)]
+
+
+def _exclude_known(df_ds: pd.DataFrame, df_ratings: pd.DataFrame,
+                   df_dataset: pd.DataFrame, known_idx) -> pd.DataFrame:
+    """
+    Removes fragrances already in the personal list: confirmed dataset matches
+    plus fuzzy brand+name matches (see matcher.known_dataset_indices).
+    """
+    if known_idx is None:
+        from matcher import known_dataset_indices
+        known_idx = known_dataset_indices(df_ratings, df_dataset)
+    return df_ds[~df_ds.index.isin(known_idx)]
+
+
+def _top_n(df_ds: pd.DataFrame, n: int) -> pd.DataFrame:
+    """De-duplicates *before* cutting to n, so n results are always returned."""
+    df_ds = df_ds.sort_values('similarity', ascending=False) \
+                 .drop_duplicates(subset=['Brand', 'Perfume'])
+    df_result = df_ds.head(n)[
+        ['Brand', 'Perfume', 'Gender', 'Top', 'Middle', 'Base',
+         'mainaccord1', 'mainaccord2', 'similarity']
+    ].copy()
+    df_result['similarity'] = df_result['similarity'].round(3)
+    df_result.columns = ['brand', 'name', 'gender', 'top', 'middle',
+                         'base', 'accord1', 'accord2', 'similarity']
+    return df_result.reset_index(drop=True)
+
+
+def get_recommendations(df_ratings: pd.DataFrame,
+                        df_dataset: pd.DataFrame,
+                        n: int = 10,
+                        exclude_known: bool = True,
+                        gender_filter='all',
+                        quality_pct: int = 40,
+                        known_idx: set | None = None) -> pd.DataFrame:
+    """
+    Genera raccomandazioni dal dataset Kaggle basate sul profilo personale.
+    df_dataset may be raw or already passed through prepare_dataset().
+    known_idx: dataset indices to exclude (computed if None).
+    """
+    profile = build_personal_profile(df_ratings)
+
+    if not profile['note_string']:
+        return pd.DataFrame()
+
+    df_ds = prepare_dataset(df_dataset)
 
     # filtri
-    if gender_filter != 'all':
-        df_ds = df_ds[df_ds['Gender'].str.lower().str.contains(
-            gender_filter, na=False)]
-
+    df_ds = _filter_gender(df_ds, gender_filter)
     if exclude_known:
-        # Primary exclusion: confirmed matches via dataset_idx
-        if 'dataset_idx' in df_ratings.columns:
-            known_idxs = set(int(idx) for idx in df_ratings['dataset_idx'].dropna())
-            df_ds = df_ds[~df_ds.index.isin(known_idxs)]
-        # Secondary exclusion: brand+name match (covers unmatched personal entries)
-        personal_keys = {
-            (str(r['brand']).lower().strip(), str(r['name']).lower().strip())
-            for _, r in df_ratings.iterrows()
-        }
-        df_ds = df_ds[~df_ds.apply(
-            lambda r: (str(r['Brand']).lower().strip(),
-                       str(r['Perfume']).lower().strip()) in personal_keys,
-            axis=1
-        )]
+        df_ds = _exclude_known(df_ds, df_ratings, df_dataset, known_idx)
 
     df_ds = df_ds[df_ds['note_string'].str.strip() != '']
 
@@ -225,46 +260,42 @@ def get_recommendations(df_ratings: pd.DataFrame,
         (1 - quality_weight) + quality_weight * penalty
     )
 
-    df_result = df_ds.nlargest(n, 'similarity')[
-        ['Brand', 'Perfume', 'Gender', 'Top', 'Middle', 'Base',
-         'mainaccord1', 'mainaccord2', 'similarity']
-    ].copy()
-
-    df_result['similarity'] = df_result['similarity'].round(3)
-    df_result.columns = ['brand', 'name', 'gender', 'top', 'middle',
-                         'base', 'accord1', 'accord2', 'similarity']
-
-    df_result = df_result.drop_duplicates(subset=['brand', 'name'])
-    return df_result.reset_index(drop=True)
+    return _top_n(df_ds, n)
 
 
-def get_similar_to(brand: str, name: str,
+def get_similar_to(rid: str,
                    df_ratings: pd.DataFrame,
                    df_dataset: pd.DataFrame,
                    n: int = 8,
-                   quality_pct: int = 40) -> pd.DataFrame:
+                   quality_pct: int = 40,
+                   gender_filter='all',
+                   known_idx: set | None = None) -> pd.DataFrame:
     """
-    Trova profumi simili a uno specifico dalla tua lista.
+    Trova profumi simili a una voce specifica della lista (by stable id).
+    Excludes every fragrance already in the list, not just the reference.
     """
-    row = df_ratings[
-        (df_ratings['brand'].str.lower() == brand.lower()) &
-        (df_ratings['name'].str.lower() == name.lower())
-    ]
+    row = df_ratings[df_ratings['id'] == rid]
 
     if row.empty or not row.iloc[0].get('matched', False):
         return pd.DataFrame()
 
-    note_str = build_note_string(row.iloc[0])
-    if not note_str:
+    if not build_note_string(row.iloc[0]):
         return pd.DataFrame()
 
     temp_profile_df = row.copy()
-    temp_profile_df['weight'] = 1.0
     temp_profile_df['matched'] = True
+    # the reference is the target: never let a low rating turn it into
+    # an "avoid" vector against itself
+    temp_profile_df['rating'] = 10.0
+
+    if known_idx is None:
+        from matcher import known_dataset_indices
+        known_idx = known_dataset_indices(df_ratings, df_dataset)
 
     return get_recommendations(
         temp_profile_df, df_dataset, n=n, exclude_known=True,
-        quality_pct=quality_pct
+        gender_filter=gender_filter, quality_pct=quality_pct,
+        known_idx=known_idx,
     )
 
 
@@ -273,52 +304,18 @@ def get_exploration_recommendations(df_ratings: pd.DataFrame,
                                      explore_style: str,
                                      intensity: float = 0.5,
                                      n: int = 10,
-                                     gender_filter: str = 'all',
-                                     quality_pct: int = 40) -> pd.DataFrame:
+                                     gender_filter='all',
+                                     quality_pct: int = 40,
+                                     known_idx: set | None = None) -> pd.DataFrame:
 
     profile = build_personal_profile(df_ratings)
     query = explore_style
 
-    df_ds = df_dataset.copy()
-
-    # filtro qualità
-    brand_scores = build_brand_scores(df_dataset)
-    df_ds['quality_score'] = df_ds.apply(
-        lambda r: compute_quality_score(r, brand_scores), axis=1
-    )
-    max_q = df_ds['quality_score'].max() or 1
-    df_ds['quality_score'] = df_ds['quality_score'] / max_q
-
-    # costruisce stringa note
-    df_ds['note_string'] = df_ds.apply(
-        lambda r: ' '.join(filter(None, [
-            str(r.get('Top', ''))    if pd.notna(r.get('Top'))    else '',
-            str(r.get('Middle', '')) if pd.notna(r.get('Middle')) else '',
-            str(r.get('Base', ''))   if pd.notna(r.get('Base'))   else '',
-            ' '.join(str(r.get(f'mainaccord{i}', ''))
-                     for i in range(1, 6)
-                     if pd.notna(r.get(f'mainaccord{i}')))
-        ])).lower(),
-        axis=1
-    )
+    df_ds = prepare_dataset(df_dataset)
 
     # filtri
-    if gender_filter != 'all':
-        df_ds = df_ds[df_ds['Gender'].str.lower().str.contains(
-            gender_filter, na=False)]
-
-    if 'dataset_idx' in df_ratings.columns:
-        known_idxs = set(int(idx) for idx in df_ratings['dataset_idx'].dropna())
-        df_ds = df_ds[~df_ds.index.isin(known_idxs)]
-    personal_keys = {
-        (str(r['brand']).lower().strip(), str(r['name']).lower().strip())
-        for _, r in df_ratings.iterrows()
-    }
-    df_ds = df_ds[~df_ds.apply(
-        lambda r: (str(r['Brand']).lower().strip(),
-                   str(r['Perfume']).lower().strip()) in personal_keys,
-        axis=1
-    )]
+    df_ds = _filter_gender(df_ds, gender_filter)
+    df_ds = _exclude_known(df_ds, df_ratings, df_dataset, known_idx)
 
     df_ds = df_ds[df_ds['note_string'].str.strip() != '']
 
@@ -368,16 +365,7 @@ def get_exploration_recommendations(df_ratings: pd.DataFrame,
         )
         df_ds = df_ds.drop(columns=['profile_sim'])
 
-    df_result = df_ds.nlargest(n, 'similarity')[
-        ['Brand', 'Perfume', 'Gender', 'Top', 'Middle', 'Base',
-         'mainaccord1', 'mainaccord2', 'similarity']
-    ].copy()
-
-    df_result['similarity'] = df_result['similarity'].round(3)
-    df_result.columns = ['brand', 'name', 'gender', 'top', 'middle',
-                         'base', 'accord1', 'accord2', 'similarity']
-
-    return df_result.reset_index(drop=True)
+    return _top_n(df_ds, n)
 
 
 def compute_scatter_data(df_ratings: pd.DataFrame) -> pd.DataFrame:
@@ -443,14 +431,14 @@ def compute_scatter_data(df_ratings: pd.DataFrame) -> pd.DataFrame:
             score_notes(base,   INTENSE_NOTES, WEIGHTS['base'])
         )
 
-        accord_str = ' '.join(filter(None, [
-            str(row.get('mainaccord1', '')),
-            str(row.get('mainaccord2', '')),
-            str(row.get('mainaccord3', '')),
-            str(row.get('mainaccord4', '')),
-            str(row.get('mainaccord5', '')),
-        ])).lower()
-        accord_tokens = set(accord_str.replace(',', ' ').split())
+        # personal entries store accords as "woody, warm spicy, ..." in
+        # main_accords (the old code read dataset-only mainaccord1..5 columns,
+        # so accords were always ignored). Keep multi-word accords intact.
+        accord_tokens = {
+            a.strip().lower()
+            for a in str(row.get('main_accords', '') or '').split(',')
+            if a.strip() and a.strip().lower() != 'nan'
+        }
 
         fresh_boost = 1.0 + 0.5 * len(accord_tokens & FRESH_ACCORDS)
         depth_boost = 1.0 + 0.5 * len(accord_tokens & DEEP_ACCORDS)
@@ -462,8 +450,11 @@ def compute_scatter_data(df_ratings: pd.DataFrame) -> pd.DataFrame:
         intensity = max(intensity_raw, 0.1)
 
         rows.append({
+            'id':        row.get('id', ''),
             'name':      row.get('name', ''),
             'brand':     row.get('brand', ''),
+            'form':      row.get('form', ''),
+            'status':    row.get('status', ''),
             'rating':    row.get('rating', 5.0),
             'freshness': freshness,
             'depth':     depth,
@@ -486,3 +477,78 @@ def compute_scatter_data(df_ratings: pd.DataFrame) -> pd.DataFrame:
     df['intensity'] = df['intensity'].clip(lower=0.1)
 
     return df
+
+def accord_scores(df_ratings: pd.DataFrame, accords: list[str],
+                  liked_min: float = 7.5, disliked_max: float = 6.0) -> pd.DataFrame:
+    """
+    For each olfactory family, how present it is among liked vs disliked
+    fragrances. Matching is on whole words, so 'rose' does not count
+    'rosewood', 'amber' does not count 'ambergris', and 'spicy' is not
+    double-counted inside 'warm spicy'.
+
+    Returns columns: accord, liked, disliked, n_liked, n_disliked, all
+    (liked/disliked normalized to the max across both, 0-1).
+    """
+    import re
+    matched = df_ratings.get('matched', pd.Series(False, index=df_ratings.index))
+    df = df_ratings[matched.fillna(False).astype(bool)]
+    if df.empty:
+        return pd.DataFrame(columns=['accord', 'liked', 'disliked',
+                                     'n_liked', 'n_disliked', 'all'])
+
+    # longest first, so 'warm spicy' consumes its words before 'spicy'
+    ordered = sorted(accords, key=len, reverse=True)
+    patterns = {a: re.compile(rf'(?<![a-z]){re.escape(a)}(?![a-z])') for a in ordered}
+
+    def families(row) -> set:
+        text = ' , '.join(str(row.get(c, '') or '') for c in
+                          ['top_notes', 'middle_notes', 'base_notes', 'main_accords']).lower()
+        found = set()
+        for a in ordered:
+            if patterns[a].search(text):
+                found.add(a)
+                text = patterns[a].sub(' ', text)
+        return found
+
+    fam = df.apply(families, axis=1)
+    rows = []
+    for a in accords:
+        has = fam.map(lambda s: a in s)
+        liked = df.loc[has & (df['rating'] >= liked_min), 'rating']
+        disliked = df.loc[has & (df['rating'] <= disliked_max), 'rating']
+        rows.append({
+            'accord':     a,
+            # weight by how much above/below the thresholds each rating is
+            'liked':      float((liked - liked_min + 1).sum()),
+            'disliked':   float((disliked_max - disliked + 1).sum()),
+            'n_liked':    int(len(liked)),
+            'n_disliked': int(len(disliked)),
+            'all':        int(has.sum()),
+        })
+    out = pd.DataFrame(rows)
+    top = max(out['liked'].max(), out['disliked'].max()) or 1
+    out['liked'] /= top
+    out['disliked'] /= top
+    return out
+
+
+def gap_analysis(df_ratings: pd.DataFrame, df_dataset: pd.DataFrame,
+                 accords: list[str]) -> pd.DataFrame:
+    """
+    Compares how common each family is in the personal list vs the dataset.
+    'gap' > 0 means the family is under-explored relative to the market.
+    """
+    mine = accord_scores(df_ratings, accords)
+    n_mine = max(int(df_ratings.get('matched', pd.Series(dtype=bool)).fillna(False).sum()), 1)
+    acc_cols = [f'mainaccord{i}' for i in range(1, 6)]
+    ds_acc = df_dataset[acc_cols].fillna('').astype(str).apply(
+        lambda r: {a.strip().lower() for a in r if a.strip()}, axis=1)
+    n_ds = max(len(ds_acc), 1)
+    rows = []
+    for _, m in mine.iterrows():
+        a = m['accord']
+        market = ds_acc.map(lambda s: a in s).sum() / n_ds
+        share = m['all'] / n_mine
+        rows.append({'accord': a, 'tua_collezione': share, 'mercato': market,
+                     'gap': market - share, 'n_tuoi': m['all']})
+    return pd.DataFrame(rows).sort_values('gap', ascending=False)
