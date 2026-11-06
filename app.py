@@ -574,7 +574,7 @@ with tab_scopri:
     if not df_tried['matched'].any():
         st.info("Servono profumi con note olfattive: abbinali in Gestione → Abbina note.")
     else:
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns([3, 3, 3, 2])
         with col1:
             n_recs = st.slider("Numero risultati", 5, 25, 10, key="recs_n")
         with col2:
@@ -583,7 +583,12 @@ with tab_scopri:
             gender_val = GENDER_OPTIONS[gender_label]
         with col3:
             quality_pct = st.slider("Filtro qualità", 10, 100, 40, 10, key="recs_quality",
-                                    help="10% = solo profumi molto votati · 100% = tutti")
+                                    help="10% = solo profumi molto apprezzati · 100% = tutti")
+        with col4:
+            st.write("")
+            niche = st.toggle("💎 Favorisci la nicchia", key="recs_niche",
+                              help="La qualità guarda il voto medio, non il numero di recensioni, "
+                                   "e i profumi più famosi vengono penalizzati.")
 
         ref_id = style_label = None
         intensity = 0.5
@@ -615,15 +620,16 @@ with tab_scopri:
                 if scopri_mode == 'profilo':
                     res = get_recommendations(df_tried, P, n=n_recs, exclude_known=exclude_known,
                                               gender_filter=gender_val, quality_pct=quality_pct,
-                                              known_idx=k)
+                                              known_idx=k, niche=niche)
                 elif scopri_mode == 'simile':
                     res = get_similar_to(ref_id, df_tried, P, n=n_recs, quality_pct=quality_pct,
-                                         gender_filter=gender_val, known_idx=k)
+                                         gender_filter=gender_val, known_idx=k,
+                                         niche=niche)
                 else:
                     res = get_exploration_recommendations(
                         df_tried, P, explore_style=EXPLORATION_STYLES[style_label],
                         intensity=intensity, n=n_recs, gender_filter=gender_val,
-                        quality_pct=quality_pct, known_idx=k)
+                        quality_pct=quality_pct, known_idx=k, niche=niche)
             st.session_state[result_key] = {'df': res, 'style': style_label}
             st.session_state.pop('exp_explanation', None)
             for key in [k_ for k_ in st.session_state if str(k_).startswith(f'expl_rec_{scopri_mode}')]:
